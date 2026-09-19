@@ -5,22 +5,16 @@
   - 交易置信度 / 预估胜率
   - 决策理由 (decision.reasoning)
   - 下一个市场周期预期及理由 (next_cycle_prediction)
-  - K 线图表截图（先上传到飞书获取 image_key，再嵌入卡片）
 
 使用方式
 --------
 1. 在飞书群里添加"自定义机器人"，复制 Webhook URL。
 2. （可选）开启签名校验，复制 Secret。
-3. （图片功能）在飞书开放平台创建企业自建应用，申请 im:resource 权限，
-   获取 App ID 和 App Secret，在设置中填写（保存到 config/settings.json）。
-4. 在程序菜单「飞书发送通知设置」中配置，或编辑 config/settings.json 的 feishu 段。
+3. 在 config/settings.json 或环境变量中配置 Webhook URL 与可选 Secret。
 
 飞书官方文档
 ------------
 自定义机器人：https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
-图片上传：    https://open.feishu.cn/document/server-docs/im-v1/image/create
-获取 tenant_access_token：
-    https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal
 """
 from __future__ import annotations
 
@@ -29,8 +23,6 @@ import hashlib
 import hmac
 import logging
 import time
-import threading
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -38,54 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── 飞书 Open API 端点 ─────────────────────────────────────────────────────────
-_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-_IMAGE_UPLOAD_URL = "https://open.feishu.cn/open-apis/im/v1/images"
-
-# tenant_access_token 有效期 2 小时；提前 5 分钟刷新
-_TOKEN_TTL_BUFFER_S = 300
 _REQUEST_TIMEOUT_S = 12
-
-
-# ── Token 缓存（进程内单例，线程安全）────────────────────────────────────────────
-class _TokenCache:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._token: str = ""
-        self._expire_at: float = 0.0
-
-    def get(self, app_id: str, app_secret: str) -> str | None:
-        """返回有效的 tenant_access_token，过期则自动刷新."""
-        with self._lock:
-            if self._token and time.time() < self._expire_at:
-                return self._token
-            return self._refresh(app_id, app_secret)
-
-    def _refresh(self, app_id: str, app_secret: str) -> str | None:
-        try:
-            import requests  # type: ignore[import]
-
-            resp = requests.post(
-                _TOKEN_URL,
-                json={"app_id": app_id, "app_secret": app_secret},
-                headers={"Content-Type": "application/json"},
-                timeout=_REQUEST_TIMEOUT_S,
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                logger.warning("飞书 token 获取失败: %s", data)
-                return None
-            self._token = data["tenant_access_token"]
-            expire = int(data.get("expire", 7200))
-            self._expire_at = time.time() + expire - _TOKEN_TTL_BUFFER_S
-            logger.debug("飞书 tenant_access_token 已刷新，有效期 %ds", expire)
-            return self._token
-        except Exception as exc:
-            logger.warning("飞书 token 刷新异常: %s", exc)
-            return None
-
-
-_token_cache = _TokenCache()
 
 
 # ── 配置加载 ──────────────────────────────────────────────────────────────────
@@ -110,40 +55,6 @@ def _gen_sign(secret: str, timestamp: int) -> str:
         string_to_sign.encode("utf-8"), digestmod=hashlib.sha256
     ).digest()
     return base64.b64encode(hmac_code).decode("utf-8")
-
-
-# ── 图片上传 ──────────────────────────────────────────────────────────────────
-def _upload_image(image_path: Path, app_id: str, app_secret: str) -> str | None:
-    """上传 PNG 图片到飞书，返回 image_key 或 None.
-
-    需要飞书企业自建应用，且已申请 im:resource 权限。
-    """
-    token = _token_cache.get(app_id, app_secret)
-    if not token:
-        logger.warning("飞书图片上传：无法获取 access_token，跳过图片")
-        return None
-    try:
-        import requests  # type: ignore[import]
-
-        with open(image_path, "rb") as f:
-            resp = requests.post(
-                _IMAGE_UPLOAD_URL,
-                headers={"Authorization": f"Bearer {token}"},
-                files={"image": (image_path.name, f, "image/png")},
-                data={"image_type": "message"},
-                timeout=_REQUEST_TIMEOUT_S,
-            )
-        data = resp.json()
-        if data.get("code") == 0:
-            key = data["data"]["image_key"]
-            logger.info("飞书图片上传成功: %s -> %s", image_path.name, key)
-            return key
-        else:
-            logger.warning("飞书图片上传失败: %s", data)
-            return None
-    except Exception as exc:
-        logger.warning("飞书图片上传异常: %s", exc)
-        return None
 
 
 # ── 辅助格式化 ────────────────────────────────────────────────────────────────
@@ -176,7 +87,6 @@ def _build_card(
     stage2_full: dict,
     symbol: str,
     timeframe: str,
-    image_key: str | None,
     exchange: str = "",
     bar_time_ms: int | None = None,
     analysis_id: str = "",
@@ -190,7 +100,6 @@ def _build_card(
       hr + markdown — 决策理由
       hr + markdown — 下一个市场周期预期
       hr + markdown — 关注点（可选）
-      hr + img      — K线图表（可选）
     """
     dec = decision_inner or {}
     ncp: dict = stage2_full.get("next_cycle_prediction") or {}
@@ -275,17 +184,6 @@ def _build_card(
             {"tag": "markdown", "content": f"**👁 关注点**\n{wp_lines}"}
         )
 
-    # K线图表
-    if image_key:
-        elements.append({"tag": "hr"})
-        elements.append(
-            {
-                "tag": "img",
-                "img_key": image_key,
-                "alt": {"tag": "plain_text", "content": f"K线图表 {symbol} {timeframe}"},
-            }
-        )
-
     card: dict = {
         "schema": "2.0",
         # 飞书卡片 2.0 仅支持 update_multi=true（共享卡片模式）
@@ -314,7 +212,6 @@ def send_order_signal(
     stage2_full: dict,
     symbol: str,
     timeframe: str,
-    chart_image_path: str | Path | None = None,
     settings: "Settings | None" = None,
     exchange: str = "",
     bar_time_ms: int | None = None,
@@ -333,9 +230,6 @@ def send_order_signal(
         交易品种，如 "XAUUSDm"。
     timeframe:
         K线周期，如 "15m"。
-    chart_image_path:
-        K线图表 PNG 的本地路径（可选）。需要在 settings.json 的 feishu 段配置
-        app_id + app_secret 才能上传图片；未配置则仅发文字卡片。
     settings:
         可选的内存 Settings；未传时从 config/settings.json 读取。
 
@@ -366,29 +260,12 @@ def send_order_signal(
         )
         return False
 
-    # ── 图片上传（可选）──────────────────────────────────────────────────────
-    image_key: str | None = None
-    app_id = (cfg.get("app_id") or "").strip()
-    app_secret = (cfg.get("app_secret") or "").strip()
-    if chart_image_path and app_id and app_secret:
-        p = Path(chart_image_path)
-        if p.exists():
-            image_key = _upload_image(p, app_id, app_secret)
-        else:
-            logger.debug("飞书通知：图片文件不存在，跳过上传: %s", chart_image_path)
-    elif chart_image_path and not (app_id and app_secret):
-        logger.debug(
-            "飞书通知：chart_image_path 已设但 app_id/app_secret 未配置，"
-            "发送无图片的卡片。"
-        )
-
     # ── 构建消息体 ──────────────────────────────────────────────────────────
     payload = _build_card(
         decision_inner=decision_inner,
         stage2_full=stage2_full,
         symbol=symbol,
         timeframe=timeframe,
-        image_key=image_key,
         exchange=exchange,
         bar_time_ms=bar_time_ms,
         analysis_id=analysis_id,

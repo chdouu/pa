@@ -177,7 +177,6 @@ def main() -> None:
         settings.provider.api_key,
         settings.feishu.webhook_url,
         settings.feishu.secret,
-        settings.feishu.app_secret,
         *[group.api_key for group in settings.provider.fallback_groups],
     ]
     configure_logging(settings.provider.api_key)

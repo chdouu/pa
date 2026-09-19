@@ -6,7 +6,15 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from pa_agent.config.settings import Settings, provider_api_key_configured
+from pa_agent.config.settings import (
+    FallbackAPIGroup,
+    Settings,
+    default_fallback_models,
+    provider_api_key_configured,
+)
+
+
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
 @dataclass(frozen=True)
@@ -43,25 +51,47 @@ def load_runtime_settings(cfg: ServerConfig) -> Settings:
     provider_key = os.getenv("PA_AI_API_KEY", "").strip()
     if provider_key:
         settings.provider.api_key = provider_key
+    gemini_keys = [
+        value.strip()
+        for value in os.getenv("PA_GEMINI_API_KEYS", "").split(",")
+        if value.strip()
+    ]
+    if gemini_keys:
+        settings.provider.fallback_enabled = True
+        settings.provider.fallback_groups = [
+            FallbackAPIGroup(
+                name=f"Gemini API {index}",
+                base_url=GEMINI_OPENAI_BASE_URL,
+                api_key=api_key,
+                enabled=True,
+                thinking=True,
+                reasoning_effort="high",
+                models=default_fallback_models(),
+            )
+            for index, api_key in enumerate(gemini_keys, 1)
+        ]
     fallback_keys_raw = os.getenv("PA_FALLBACK_API_KEYS", "").strip()
-    if fallback_keys_raw:
+    if fallback_keys_raw and not gemini_keys:
         fallback_keys = json.loads(fallback_keys_raw)
         for group in settings.provider.fallback_groups:
             if group.name in fallback_keys:
                 group.api_key = str(fallback_keys[group.name])
+    if provider_key and not gemini_keys and not any(
+        group.enabled and group.api_key.strip()
+        for group in settings.provider.fallback_groups
+    ):
+        settings.provider.fallback_enabled = False
     webhook = os.getenv("PA_FEISHU_WEBHOOK_URL", "").strip()
     if webhook:
         settings.feishu.webhook_url = webhook
-    for env_name, field in (
-        ("PA_FEISHU_SECRET", "secret"),
-        ("PA_FEISHU_APP_ID", "app_id"),
-        ("PA_FEISHU_APP_SECRET", "app_secret"),
-    ):
+    for env_name, field in (("PA_FEISHU_SECRET", "secret"),):
         value = os.getenv(env_name, "").strip()
         if value:
             setattr(settings.feishu, field, value)
     if not provider_api_key_configured(settings):
-        raise RuntimeError("No AI API key configured (set PA_AI_API_KEY)")
+        raise RuntimeError(
+            "No AI API key configured (set PA_GEMINI_API_KEYS or legacy PA_AI_API_KEY/PA_FALLBACK_API_KEYS)"
+        )
     model = settings.provider.model.lower()
     if model.startswith(("openclaw_", "cursor", "trae", "qoder")):
         raise RuntimeError("Desktop-integrated AI providers are not supported by PA Server")
@@ -76,7 +106,7 @@ def settings_version(settings: Settings) -> str:
     for group in provider.get("fallback_groups", []):
         group.pop("api_key", None)
     feishu = data.get("feishu", {})
-    for name in ("webhook_url", "secret", "app_id", "app_secret"):
+    for name in ("webhook_url", "secret"):
         feishu.pop(name, None)
     raw = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]

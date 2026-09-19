@@ -14,13 +14,19 @@ Copy-Item settings.example.json config/settings.json
 Copy-Item .env.example .env
 ```
 
-編輯 `config/settings.json` 的模型、推理、校驗及飛書開關。敏感值建議只放 `.env`：
+模型候補清單已寫在 `config/settings.json`。敏感值只需放在 `.env`：
 
 - `PA_API_TOKEN`：管理 API 的長隨機 Token。
-- `PA_AI_API_KEY`：主要 AI API Key。
-- `PA_FALLBACK_API_KEYS`：可選的 JSON 物件，以備援群組名稱對應 API Key。
-- `PA_FEISHU_WEBHOOK_URL`、`PA_FEISHU_SECRET`：飛書機器人設定。
-- `PA_FEISHU_APP_ID`、`PA_FEISHU_APP_SECRET`：可選；設定後通知會附無介面產生的 K 線圖。
+- `PA_GEMINI_API_KEYS`：一至多組 Gemini API Key，以逗號分隔；前面的 Key 優先。
+- `PA_FEISHU_WEBHOOK_URL`：飛書自訂機器人的 Webhook URL。
+- `PA_FEISHU_SECRET`：飛書簽名 Secret，可留空。
+
+每組 Key 都依序嘗試 Gemini 2.5 Flash、2.5 Flash Lite、3 Flash、3.1 Flash Lite、
+3.5 Flash、3.5 Flash Lite、3.6 Flash、3.7 Flash、3.8 Flash。同一組的模型全部失敗後
+才切換下一組 Key；成功組合會在本次服務執行期間成為下一次分析的第一候補。
+
+舊版的 `PA_AI_API_KEY` 與 `PA_FALLBACK_API_KEYS` 仍可使用，但新的部署不需要設定。
+飛書通知固定使用文字互動卡片，不需要 App ID 或 App Secret。
 
 啟動並檢查：
 
@@ -75,6 +81,7 @@ curl -X POST -H "Authorization: Bearer $PA_API_TOKEN" \
 - 佇列中工作的設定版本不會被靜默替換；若停機時更改模型設定，舊版本的未完成工作會標記
   `settings_changed`，可用單次分析重新提交，避免用錯模型卻記成舊版本。
 - 同一監控依 K 棒時間執行；不同監控由單一工作者輪流選取。
+- 分析查詢結果的 `ai_provider` 會顯示實際成功的 API 組別與模型 ID，但不會回傳 API Key。
 - 重啟會恢復進行中的分析與通知。若停機太久而 TradingView 已無法提供完整缺口，監控會
   自動暫停並顯示錯誤，避免假裝補齊。
 - 只有限價單、突破單或市價單且達到 PA 設定置信度門檻時建立通知。推送前若已有更新的

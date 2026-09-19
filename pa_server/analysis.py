@@ -32,7 +32,6 @@ def scrub_secrets(value, settings):
     secrets.extend((
         settings.feishu.webhook_url,
         settings.feishu.secret,
-        settings.feishu.app_secret,
     ))
     secrets = [secret for secret in secrets if secret]
 
@@ -71,7 +70,14 @@ class StrictWriter(PendingWriter):
         temp.replace(path)
 
 
-def run_snapshot_analysis(job: dict, settings, root: Path, progress: Callable[[str], None], timezone_name: str = "Asia/Taipei") -> tuple[dict, dict]:
+def run_snapshot_analysis(
+    job: dict,
+    settings,
+    root: Path,
+    progress: Callable[[str], None],
+    timezone_name: str = "Asia/Taipei",
+    client=None,
+) -> tuple[dict, dict]:
     request = job["request"]
     snapshot = job["snapshot"]
     bars = [KlineBar(**item) for item in snapshot]
@@ -95,8 +101,9 @@ def run_snapshot_analysis(job: dict, settings, root: Path, progress: Callable[[s
                 previous = None
         except Exception:
             previous = None
+    analysis_client = client or create_ai_client(settings.provider)
     orchestrator = TwoStageOrchestrator(
-        client=create_ai_client(settings.provider),
+        client=analysis_client,
         assembler=PromptAssembler(prompt_dir=root / "prompt_engineering", experience_reader=ExperienceReader(root / "experience"), prompt_settings=settings.prompt),
         router=route_strategy_files,
         validator=JsonValidator(settings),
@@ -112,13 +119,29 @@ def run_snapshot_analysis(job: dict, settings, root: Path, progress: Callable[[s
         elif event == OrchestratorEvent.Stage2Started:
             progress("stage2")
 
-    record = orchestrator.submit(
-        frame, CancelToken(), on_event,
-        previous_record=previous,
-        incremental_new_bar_count=incremental_count,
-    )
+    set_progress = getattr(analysis_client, "set_progress_callback", None)
+    if set_progress is not None:
+        set_progress(progress)
+    try:
+        record = orchestrator.submit(
+            frame, CancelToken(), on_event,
+            previous_record=previous,
+            incremental_new_bar_count=incremental_count,
+        )
+    finally:
+        if set_progress is not None:
+            set_progress(None)
     if record.exception or not record.stage1_diagnosis or not record.stage2_decision:
         raise AnalysisError("model_error", "Two-stage analysis did not complete")
+    get_last_success = getattr(analysis_client, "get_last_success", None)
+    selected_ai = get_last_success() if get_last_success is not None else None
+    if selected_ai is None:
+        selected_ai = {
+            "api_group": "primary",
+            "api_group_index": 1,
+            "model": settings.provider.model,
+            "model_id": settings.provider.model,
+        }
     result = {
         "analysis_id": job["id"],
         "watch_id": job.get("watch_id"),
@@ -129,7 +152,8 @@ def run_snapshot_analysis(job: dict, settings, root: Path, progress: Callable[[s
         ).isoformat(),
         "snapshot_time_ms": frame.snapshot_ts_local_ms,
         "settings_version": job["settings_version"],
-        "model": settings.provider.model,
+        "model": selected_ai["model_id"],
+        "ai_provider": selected_ai,
         "stage1_diagnosis": record.stage1_diagnosis,
         "stage2_decision": record.stage2_decision,
         "usage_total": record.usage_total,

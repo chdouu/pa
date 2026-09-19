@@ -3,13 +3,11 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
 from pa_agent.notify.feishu_notifier import send_order_signal
+from pa_agent.ai.client_factory import create_ai_client
 from pa_agent.config.settings import provider_api_key_configured
 
 from .analysis import AnalysisError, has_order_opportunity, run_snapshot_analysis
-from .charts import render_chart
 from .market import closed_bars, discover_snapshots, fetch_bars, latest_closed_ts, serialize_snapshot, watch_request
 
 logger = logging.getLogger(__name__)
@@ -18,6 +16,7 @@ logger = logging.getLogger(__name__)
 class Runtime:
     def __init__(self, config, settings, version, store) -> None:
         self.config, self.settings, self.version, self.store = config, settings, version, store
+        self.ai_client = create_ai_client(settings.provider)
         self.stop = threading.Event()
         self.wake_scheduler = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -30,7 +29,6 @@ class Runtime:
             self.settings.provider.api_key,
             self.settings.feishu.webhook_url,
             self.settings.feishu.secret,
-            self.settings.feishu.app_secret,
             *[group.api_key for group in self.settings.provider.fallback_groups],
         ]
         for secret in secrets:
@@ -104,6 +102,7 @@ class Runtime:
                     job, self.settings, self.config.root,
                     lambda stage: self.store.update_job_progress(job["id"], stage),
                     self.config.timezone,
+                    self.ai_client,
                 )
                 threshold = int(getattr(self.settings.general, "decision_confidence_threshold", 0))
                 notify = bool(
@@ -140,20 +139,10 @@ class Runtime:
                     raise RuntimeError("TradingView has not confirmed the target bar as latest")
                 stage2 = result["stage2_decision"]
                 decision = stage2.get("decision") or {}
-                image_path = None
-                if self.settings.feishu.app_id.strip() and self.settings.feishu.app_secret.strip():
-                    try:
-                        image_path = render_chart(
-                            job["snapshot"], decision,
-                            self.config.data_dir / "charts" / f"{job['id']}.png",
-                            request["symbol"], request["timeframe"],
-                        )
-                    except Exception as chart_exc:
-                        logger.warning("analysis=%s chart rendering failed; sending text card: %s", job["id"], chart_exc)
                 ok = send_order_signal(
                     decision_inner=decision, stage2_full=stage2,
                     symbol=request["symbol"], timeframe=request["timeframe"],
-                    chart_image_path=image_path, settings=self.settings,
+                    settings=self.settings,
                     exchange=request["exchange"], bar_time_ms=int(job["target_ts"]),
                     analysis_id=job["id"], timezone_name=self.config.timezone,
                 )

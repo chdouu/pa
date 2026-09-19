@@ -1,11 +1,33 @@
 {
   "provider": {
-    "model": "deepseek-chat",
-    "base_url": "https://api.deepseek.com",
+    "model": "gemini-2.5-flash",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "api_key_encrypted": "",
     "thinking": true,
     "reasoning_effort": "high",
-    "context_window": 128000
+    "context_window": 1048576,
+    "fallback_enabled": true,
+    "fallback_groups": [
+      {
+        "name": "Gemini API 1",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key": "",
+        "enabled": true,
+        "thinking": true,
+        "reasoning_effort": "high",
+        "models": [
+          {"name": "Gemini 2.5 Flash", "model_id": "gemini-2.5-flash", "enabled": true},
+          {"name": "Gemini 2.5 Flash Lite", "model_id": "gemini-2.5-flash-lite", "enabled": true},
+          {"name": "Gemini 3 Flash", "model_id": "gemini-3-flash-preview", "enabled": true},
+          {"name": "Gemini 3.1 Flash Lite", "model_id": "gemini-3.1-flash-lite", "enabled": true},
+          {"name": "Gemini 3.5 Flash", "model_id": "gemini-3.5-flash", "enabled": true},
+          {"name": "Gemini 3.5 Flash Lite", "model_id": "gemini-3.5-flash-lite", "enabled": true},
+          {"name": "Gemini 3.6 Flash", "model_id": "gemini-3.6-flash", "enabled": true},
+          {"name": "Gemini 3.7 Flash", "model_id": "gemini-3.7-flash", "enabled": true},
+          {"name": "Gemini 3.8 Flash", "model_id": "gemini-3.8-flash", "enabled": true}
+        ]
+      }
+    ]
   },
   "general": {
     "analysis_bar_count": 100,
@@ -42,8 +64,6 @@
     "enabled": true,
     "webhook_url": "",
     "secret": "",
-    "app_id": "",
-    "app_secret": "",
     "notify_on_order_only": true
   },
   "pushplus": {

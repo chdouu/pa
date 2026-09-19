@@ -4,11 +4,12 @@ services:
     restart: unless-stopped
     environment:
       PA_API_TOKEN: ${PA_API_TOKEN:?set PA_API_TOKEN in .env}
-      PA_AI_API_KEY: ${PA_AI_API_KEY:?set PA_AI_API_KEY in .env}
+      PA_GEMINI_API_KEYS: ${PA_GEMINI_API_KEYS:-}
+      # Legacy variables remain accepted for existing deployments.
+      PA_AI_API_KEY: ${PA_AI_API_KEY:-}
+      PA_FALLBACK_API_KEYS: ${PA_FALLBACK_API_KEYS:-}
       PA_FEISHU_WEBHOOK_URL: ${PA_FEISHU_WEBHOOK_URL:-}
       PA_FEISHU_SECRET: ${PA_FEISHU_SECRET:-}
-      PA_FEISHU_APP_ID: ${PA_FEISHU_APP_ID:-}
-      PA_FEISHU_APP_SECRET: ${PA_FEISHU_APP_SECRET:-}
       PA_TIMEZONE: Asia/Taipei
       TZ: Asia/Taipei
       PA_BIND_HOST: 0.0.0.0

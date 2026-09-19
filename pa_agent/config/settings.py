@@ -37,7 +37,7 @@ class FallbackAPIGroup(BaseModel):
     base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     api_key: str = ""
     enabled: bool = True
-    thinking: bool = False
+    thinking: bool = True
     reasoning_effort: Literal["low", "medium", "high", "max"] = "high"
     models: list[FallbackModel] = Field(default_factory=default_fallback_models)
 
@@ -155,8 +155,6 @@ _FEISHU_CONFIG_KEYS = (
     "enabled",
     "webhook_url",
     "secret",
-    "app_id",
-    "app_secret",
     "notify_on_order_only",
 )
 
@@ -168,8 +166,6 @@ class FeishuSettings(BaseModel):
     enabled: bool = True
     webhook_url: str = ""
     secret: str = ""
-    app_id: str = ""
-    app_secret: str = ""
     #: True = only push when there is an order opportunity.
     notify_on_order_only: bool = True
 

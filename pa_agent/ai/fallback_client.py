@@ -53,6 +53,7 @@ class FallbackClient:
         self._settings = settings.model_copy(deep=True)
         self._log = logger_ or logging.getLogger(__name__)
         self._preferred: tuple[int, int] | None = None
+        self._last_success: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._local = threading.local()
 
@@ -60,6 +61,12 @@ class FallbackClient:
         with self._lock:
             self._settings = settings.model_copy(deep=True)
             self._preferred = None
+            self._last_success = None
+
+    def get_last_success(self) -> dict[str, Any] | None:
+        """Return safe metadata for the most recently successful candidate."""
+        with self._lock:
+            return dict(self._last_success) if self._last_success else None
 
     def set_progress_callback(self, callback: Callable[[str], None] | None) -> None:
         """Attach a UI status sink to the calling worker thread."""
@@ -147,6 +154,12 @@ class FallbackClient:
                 raise CancelledError("Request cancelled after API call")
             with self._lock:
                 self._preferred = (group_index, model_index)
+                self._last_success = {
+                    "api_group": group.name or f"API {group_index + 1}",
+                    "api_group_index": group_index + 1,
+                    "model": model.name or model.model_id,
+                    "model_id": model.model_id,
+                }
             if method == "stream_chat":
                 on_reasoning = kwargs.get("on_reasoning_token")
                 on_content = kwargs.get("on_content_token")
