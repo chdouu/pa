@@ -129,6 +129,8 @@ _NO_ORDER_PRICE_FIELDS = (
     "entry_basis_bar",
     "entry_basis_extreme",
     "entry_rule",
+    "entry_zone_low",
+    "entry_zone_high",
 )
 
 _DECISION_SUBFIELD_KEYS: frozenset[str] = frozenset({
@@ -152,6 +154,10 @@ _DECISION_SUBFIELD_KEYS: frozenset[str] = frozenset({
     "watch_points",
     "risk_assessment",
     "invalidation_condition",
+    "entry_zone_low",
+    "entry_zone_high",
+    "proposed_entry_price",
+    "proposed_stop_loss_price",
 })
 
 # Decision fields models sometimes nest under diagnosis_summary by mistake.

@@ -185,6 +185,36 @@ class PushPlusSettings(BaseModel):
     token: str = ""
 
 
+class OKXCredentialSettings(BaseModel):
+    """Compatibility fields for the desktop build; Server reads secrets from env."""
+    model_config = ConfigDict(extra="ignore")
+
+    api_key_encrypted: str = ""
+    secret_key_encrypted: str = ""
+    passphrase_encrypted: str = ""
+
+
+class OKXSettings(BaseModel):
+    """OKX USDT perpetual execution settings."""
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    profile: Literal["demo", "live"] = "demo"
+    api_region: Literal["global", "eea", "us"] = "global"
+    margin_mode: Literal["isolated", "cross"] = "isolated"
+    leverage: int = Field(default=1, ge=1, le=125)
+    sizing_mode: Literal["fixed_notional", "fixed_margin", "risk_percent"] = "fixed_notional"
+    fixed_notional_usdt: float = Field(default=0.0, ge=0)
+    fixed_margin_usdt: float = Field(default=0.0, ge=0)
+    risk_percent: float = Field(default=0.0, ge=0, le=100)
+    max_notional_usdt: float = Field(default=0.0, ge=0)
+    pending_expiry_bars: int = Field(default=3, ge=1, le=100)
+    poll_interval_seconds: int = Field(default=2, ge=1, le=60)
+    symbol_mappings: dict[str, str] = Field(default_factory=dict)
+    demo_credentials: OKXCredentialSettings = Field(default_factory=OKXCredentialSettings)
+    live_credentials: OKXCredentialSettings = Field(default_factory=OKXCredentialSettings)
+
+
 class Settings(BaseModel):
     """Root settings object persisted to config/settings.json."""
     model_config = ConfigDict(extra="ignore")
@@ -196,6 +226,7 @@ class Settings(BaseModel):
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
     tushare: TushareSettings = Field(default_factory=TushareSettings)
+    okx: OKXSettings = Field(default_factory=OKXSettings)
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:

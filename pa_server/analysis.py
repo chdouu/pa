@@ -102,6 +102,9 @@ def run_snapshot_analysis(
         except Exception:
             previous = None
     analysis_client = client or create_ai_client(settings.provider)
+    begin_trace = getattr(analysis_client, "begin_trace", None)
+    if begin_trace is not None:
+        begin_trace()
     orchestrator = TwoStageOrchestrator(
         client=analysis_client,
         assembler=PromptAssembler(prompt_dir=root / "prompt_engineering", experience_reader=ExperienceReader(root / "experience"), prompt_settings=settings.prompt),
@@ -115,8 +118,14 @@ def run_snapshot_analysis(
 
     def on_event(event: OrchestratorEvent) -> None:
         if event == OrchestratorEvent.Stage1Started:
+            set_stage = getattr(analysis_client, "set_stage", None)
+            if set_stage is not None:
+                set_stage("stage1")
             progress("stage1")
         elif event == OrchestratorEvent.Stage2Started:
+            set_stage = getattr(analysis_client, "set_stage", None)
+            if set_stage is not None:
+                set_stage("stage2")
             progress("stage2")
 
     set_progress = getattr(analysis_client, "set_progress_callback", None)
@@ -141,7 +150,14 @@ def run_snapshot_analysis(
             "api_group_index": 1,
             "model": settings.provider.model,
             "model_id": settings.provider.model,
+            "stage": "analysis",
         }
+    get_success_history = getattr(analysis_client, "get_success_history", None)
+    ai_history = get_success_history() if get_success_history is not None else [selected_ai]
+    ai_by_stage = {}
+    for item in ai_history:
+        if item.get("stage"):
+            ai_by_stage[item["stage"]] = item
     result = {
         "analysis_id": job["id"],
         "watch_id": job.get("watch_id"),
@@ -154,6 +170,7 @@ def run_snapshot_analysis(
         "settings_version": job["settings_version"],
         "model": selected_ai["model_id"],
         "ai_provider": selected_ai,
+        "ai_providers_by_stage": ai_by_stage,
         "stage1_diagnosis": record.stage1_diagnosis,
         "stage2_decision": record.stage2_decision,
         "usage_total": record.usage_total,

@@ -342,7 +342,7 @@ _STAGE2_OUTPUT_CONTRACT = """
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
 禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
 JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
-重要规则：当 order_type 为“不下单”时，entry_price、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。
+重要规则：当 order_type 为“不下单”时，entry_price、entry_zone_low、entry_zone_high、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。若存在上一轮交易假设，可仅用 proposed_entry_price / proposed_stop_loss_price 提出调整建议；止损建议只能收紧风险。
 
 ```json
 {
@@ -350,6 +350,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "order_direction": "做多|做空|null（禁止写 bearish/bullish/short/long）",
     "order_type": "限价单|突破单|市价单|不下单",
     "entry_price": null,
+    "entry_zone_low": null,
+    "entry_zone_high": null,
+    "proposed_entry_price": null,
+    "proposed_stop_loss_price": null,
     "entry_basis_bar": null,
     "entry_basis_extreme": null,
     "entry_rule": null,

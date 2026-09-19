@@ -54,6 +54,7 @@ class FallbackClient:
         self._log = logger_ or logging.getLogger(__name__)
         self._preferred: tuple[int, int] | None = None
         self._last_success: dict[str, Any] | None = None
+        self._success_history: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._local = threading.local()
 
@@ -62,6 +63,7 @@ class FallbackClient:
             self._settings = settings.model_copy(deep=True)
             self._preferred = None
             self._last_success = None
+            self._success_history = []
 
     def get_last_success(self) -> dict[str, Any] | None:
         """Return safe metadata for the most recently successful candidate."""
@@ -71,6 +73,18 @@ class FallbackClient:
     def set_progress_callback(self, callback: Callable[[str], None] | None) -> None:
         """Attach a UI status sink to the calling worker thread."""
         self._local.progress = callback
+
+    def begin_trace(self) -> None:
+        with self._lock:
+            self._success_history = []
+            self._last_success = None
+
+    def set_stage(self, stage: str) -> None:
+        self._local.stage = stage
+
+    def get_success_history(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._success_history]
 
     def _ordered_candidates(self, settings: AIProviderSettings) -> list[tuple[int, int]]:
         candidates = [
@@ -160,6 +174,10 @@ class FallbackClient:
                     "model": model.name or model.model_id,
                     "model_id": model.model_id,
                 }
+                stage = getattr(self._local, "stage", "")
+                if stage:
+                    self._last_success["stage"] = stage
+                self._success_history.append(dict(self._last_success))
             if method == "stream_chat":
                 on_reasoning = kwargs.get("on_reasoning_token")
                 on_content = kwargs.get("on_content_token")

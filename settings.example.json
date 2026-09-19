@@ -66,6 +66,20 @@
     "secret": "",
     "notify_on_order_only": true
   },
+  "okx": {
+    "enabled": false,
+    "profile": "demo",
+    "api_region": "global",
+    "margin_mode": "isolated",
+    "leverage": 1,
+    "sizing_mode": "fixed_notional",
+    "fixed_notional_usdt": 0,
+    "fixed_margin_usdt": 0,
+    "risk_percent": 0,
+    "max_notional_usdt": 0,
+    "pending_expiry_bars": 3,
+    "poll_interval_seconds": 2
+  },
   "pushplus": {
     "enabled": false,
     "token": ""

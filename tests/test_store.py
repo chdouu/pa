@@ -59,3 +59,80 @@ def test_paused_watch_holds_queue_and_delete_cancels_it(tmp_path: Path):
     jobs = store.list_analyses(watch["id"], 10, 0)
     deleted_job = next(item for item in jobs if item["target_ts"] == 2000)
     assert deleted_job["error"]["code"] == "watch_deleted"
+
+
+def test_analysis_and_trade_task_are_committed_and_result_is_updated(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    request = {**REQUEST, "trading_enabled": True, "okx_instrument": "ETH-USDT-SWAP"}
+    watch, _ = store.create_watch(request, "v2", None)
+    snapshot = [{"seq": 1, "ts_open": 1000, "open": 1, "high": 2, "low": 1,
+                 "close": 2, "volume": 1, "amount": 0, "pct_chg": None, "closed": True}]
+    store.enqueue_watch_jobs(watch["id"], request, [(1000, snapshot)], "v2")
+    job = store.claim_job()
+    store.finish_job(job["id"], {"trading_status": "pending"}, {"ok": True}, False, True)
+
+    task = store.claim_trade_task()
+    assert task["job_id"] == job["id"]
+    store.finish_trade_task(task["id"], "succeeded", result={"action": "submitted"})
+    result = store.get_job(job["id"])["result"]
+    assert result["trading_status"] == "succeeded"
+    assert result["trading_result"] == {"action": "submitted"}
+
+
+def test_running_trade_work_is_requeued_after_restart(tmp_path: Path):
+    path = tmp_path / "db.sqlite3"
+    store = Store(path)
+    request = {**REQUEST, "trading_enabled": True, "okx_instrument": "ETH-USDT-SWAP"}
+    watch, _ = store.create_watch(request, "v2", None)
+    snapshot = [{"seq": 1, "ts_open": 1000, "open": 1, "high": 2, "low": 1,
+                 "close": 2, "volume": 1, "amount": 0, "pct_chg": None, "closed": True}]
+    store.enqueue_watch_jobs(watch["id"], request, [(1000, snapshot)], "v2")
+    job = store.claim_job()
+    store.finish_job(job["id"], {"trading_status": "pending"}, {"ok": True}, False, True)
+    task = store.claim_trade_task()
+    assert task["status"] == "running"
+    recovered = Store(path).claim_trade_task()
+    assert recovered["id"] == task["id"]
+    assert recovered["attempts"] == 2
+
+
+def test_only_one_enabled_watch_can_own_a_contract(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    first, _ = store.create_watch({
+        **REQUEST, "trading_enabled": True, "okx_instrument": "ETH-USDT-SWAP",
+    }, "v1", None)
+    second, _ = store.create_watch({
+        **REQUEST, "timeframe": "1h", "trading_enabled": False,
+        "okx_instrument": "ETH-USDT-SWAP",
+    }, "v1", None)
+    assert first["trading_enabled"] is True
+    try:
+        store.update_watch_trading(
+            second["id"], enabled=True, okx_instrument="ETH-USDT-SWAP"
+        )
+    except ValueError as exc:
+        assert "already assigned" in str(exc)
+    else:
+        raise AssertionError("duplicate contract assignment should fail")
+
+
+def test_existing_database_is_migrated_with_trading_disabled(tmp_path: Path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE watches (
+          id TEXT PRIMARY KEY, source TEXT NOT NULL, exchange TEXT NOT NULL,
+          symbol TEXT NOT NULL, timeframe TEXT NOT NULL, bar_count INTEGER NOT NULL,
+          extended_session INTEGER NOT NULL, state TEXT NOT NULL,
+          last_seen_ts INTEGER, settings_version TEXT NOT NULL, error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
+        )""")
+        db.execute("""INSERT INTO watches VALUES
+          ('old','tradingview','OKX','BTCUSDT','15m',100,0,'active',NULL,'v1',NULL,
+           '2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00',NULL)""")
+    store = Store(path)
+    watch = store.get_watch("old")
+    assert watch["trading_enabled"] is False
+    assert watch["okx_instrument"] == ""
+    assert store.get_trading_settings()["enabled"] is False

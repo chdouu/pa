@@ -308,3 +308,39 @@ def send_order_signal(
     except Exception as exc:
         logger.warning("飞书通知 HTTP 请求失败: %s", exc)
         return False
+
+
+def send_trade_event(*, event: str, data: dict[str, Any], settings: "Settings | None" = None) -> bool:
+    """Send an OKX lifecycle event without exposing credential fields."""
+    cfg = _feishu_config_dict(settings)
+    webhook_url = (cfg.get("webhook_url") or "").strip()
+    if not cfg.get("enabled", True) or not webhook_url:
+        return False
+    hidden = {"api_key", "secret", "secret_key", "passphrase"}
+    safe = {key: value for key, value in data.items() if key.lower() not in hidden}
+    lines = [f"**OKX 交易事件：{event}**"] + [f"**{key}**：{value}" for key, value in safe.items()]
+    payload: dict[str, Any] = {
+        "msg_type": "interactive",
+        "card": {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"OKX {event}"},
+                "template": "blue",
+            },
+            "body": {"elements": [{"tag": "markdown", "content": "\n".join(lines)}]},
+        },
+    }
+    secret = (cfg.get("secret") or "").strip()
+    if secret:
+        ts = int(time.time())
+        payload["timestamp"] = str(ts)
+        payload["sign"] = _gen_sign(secret, ts)
+    try:
+        import requests  # type: ignore[import]
+
+        result = requests.post(webhook_url, json=payload, timeout=_REQUEST_TIMEOUT_S).json()
+        return result.get("code") == 0 or result.get("StatusCode") == 0
+    except Exception as exc:
+        logger.warning("飞书 OKX 事件通知失败: %s", exc)
+        return False

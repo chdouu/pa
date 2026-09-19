@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pa-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Headless continuous Price Action analysis service"
 requires-python = ">=3.11"
 license = {text = "AGPL-3.0-or-later"}
@@ -20,6 +20,7 @@ dependencies = [
   "jsonschema>=4.22",
   "cryptography>=42",
   "requests>=2.32",
+  "httpx>=0.27",
   "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git",
 ]
 
@@ -31,6 +32,9 @@ pa-server = "pa_server.api:main"
 
 [tool.setuptools.packages.find]
 include = ["pa_server*", "pa_agent*"]
+
+[tool.setuptools.package-data]
+pa_server = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

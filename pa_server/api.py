@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hmac
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from pa_agent.notify.feishu_notifier import send_order_signal
 
@@ -25,6 +28,8 @@ class AnalysisRequest(BaseModel):
     timeframe: str
     bar_count: int = Field(default=100, ge=20, le=5000)
     extended_session: bool = False
+    trading_enabled: bool = False
+    okx_instrument: str = ""
 
     @field_validator("exchange", "symbol")
     @classmethod
@@ -41,9 +46,48 @@ class AnalysisRequest(BaseModel):
             raise ValueError("unsupported timeframe")
         return value
 
+    @field_validator("okx_instrument")
+    @classmethod
+    def clean_instrument(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_trading(self):
+        if self.trading_enabled:
+            if self.exchange != "OKX":
+                raise ValueError("自動交易監控必須使用 TradingView OKX 行情")
+            if not self.okx_instrument.endswith("-USDT-SWAP"):
+                raise ValueError("自動交易需要有效的 OKX USDT 永續合約")
+        return self
+
 
 class WatchPatch(BaseModel):
-    state: Literal["active", "paused"]
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["active", "paused"] | None = None
+    trading_enabled: bool | None = None
+    okx_instrument: str | None = None
+
+    @model_validator(mode="after")
+    def not_empty(self):
+        if self.state is None and self.trading_enabled is None and self.okx_instrument is None:
+            raise ValueError("至少需要一個修改欄位")
+        return self
+
+
+class TradingSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    profile: Literal["demo", "live"] = "demo"
+    api_region: Literal["global", "eea", "us"] = "global"
+    margin_mode: Literal["isolated", "cross"] = "isolated"
+    leverage: int = Field(default=1, ge=1, le=125)
+    sizing_mode: Literal["fixed_notional", "fixed_margin", "risk_percent"] = "fixed_notional"
+    fixed_notional_usdt: float = Field(default=0, ge=0)
+    fixed_margin_usdt: float = Field(default=0, ge=0)
+    risk_percent: float = Field(default=0, ge=0, le=100)
+    max_notional_usdt: float = Field(default=0, ge=0)
+    pending_expiry_bars: int = Field(default=3, ge=1, le=100)
+    poll_interval_seconds: int = Field(default=2, ge=1, le=60)
 
 
 def create_app(config: ServerConfig | None = None, settings=None, store: Store | None = None) -> FastAPI:
@@ -63,8 +107,14 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
         finally:
             runtime.close()
 
-    app = FastAPI(title="PA Server", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="PA Server", version="0.2.0", lifespan=lifespan)
     app.state.runtime = runtime
+    web_dir = Path(__file__).resolve().parent / "web"
+    app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def dashboard() -> FileResponse:
+        return FileResponse(web_dir / "index.html")
 
     bearer = HTTPBearer(auto_error=False)
 
@@ -92,7 +142,7 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
     @app.post("/v1/watches", status_code=201, dependencies=[auth])
     def create_watch(body: AnalysisRequest, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict:
         try:
-            watch, created = store.create_watch(body.model_dump(), version, idempotency_key)
+            watch, created = store.create_watch(body.model_dump(), runtime.version, idempotency_key)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         response.status_code = 201 if created else 200
@@ -113,16 +163,55 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
 
     @app.patch("/v1/watches/{watch_id}", dependencies=[auth])
     def patch_watch(watch_id: str, body: WatchPatch) -> dict:
-        if not store.set_watch_state(watch_id, body.state):
+        watch = store.get_watch(watch_id)
+        if not watch:
             raise HTTPException(404, "Watch not found")
+        if body.state is not None:
+            store.set_watch_state(watch_id, body.state)
+        if body.trading_enabled is not None or body.okx_instrument is not None:
+            instrument = (
+                body.okx_instrument.strip().upper()
+                if body.okx_instrument is not None
+                else watch.get("okx_instrument", "")
+            )
+            enabled = (
+                body.trading_enabled
+                if body.trading_enabled is not None
+                else bool(watch.get("trading_enabled"))
+            )
+            if enabled and (
+                watch["exchange"] != "OKX" or not instrument.endswith("-USDT-SWAP")
+            ):
+                raise HTTPException(422, "Trading requires OKX market data and a USDT swap")
+            if instrument != watch.get("okx_instrument"):
+                active = runtime.trading.service.store.active_all()
+                if any(row["inst_id"] == watch.get("okx_instrument") for row in active):
+                    raise HTTPException(409, "Cannot change mapping while its thesis is active")
+            try:
+                store.update_watch_trading(
+                    watch_id, enabled=enabled, okx_instrument=instrument
+                )
+                runtime.trading.refresh_mappings()
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
         if body.state == "active":
             runtime.wake_scheduler.set()
         return store.get_watch(watch_id)
 
     @app.delete("/v1/watches/{watch_id}", status_code=204, dependencies=[auth])
     def delete_watch(watch_id: str) -> Response:
+        watch = store.get_watch(watch_id)
+        if not watch:
+            raise HTTPException(404, "Watch not found")
+        instrument = watch.get("okx_instrument") or ""
+        if instrument and any(
+            row["inst_id"] == instrument
+            for row in runtime.trading.service.store.active_all()
+        ):
+            raise HTTPException(409, "Cannot delete a watch while its trading thesis is active")
         if not store.delete_watch(watch_id):
             raise HTTPException(404, "Watch not found")
+        runtime.trading.refresh_mappings()
         return Response(status_code=204)
 
     @app.get("/v1/watches/{watch_id}/analyses", dependencies=[auth])
@@ -138,7 +227,7 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
     @app.post("/v1/analyses", status_code=202, dependencies=[auth])
     def create_analysis(body: AnalysisRequest, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict:
         try:
-            job, created = store.create_manual_job(body.model_dump(), version, idempotency_key)
+            job, created = store.create_manual_job(body.model_dump(), runtime.version, idempotency_key)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         response.status_code = 202 if created else 200
@@ -164,6 +253,79 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
             raise HTTPException(502, "Feishu test message failed")
         return {"sent": True}
 
+    @app.get("/v1/trading/settings", dependencies=[auth])
+    def get_trading_settings() -> dict:
+        return runtime.trading.public_settings()
+
+    @app.put("/v1/trading/settings", dependencies=[auth])
+    def put_trading_settings(body: TradingSettingsRequest) -> dict:
+        try:
+            runtime.update_trading_settings(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, runtime._safe_error(exc)) from exc
+        return runtime.trading.public_settings()
+
+    @app.post("/v1/trading/validate", dependencies=[auth])
+    def validate_trading() -> dict:
+        try:
+            return runtime.trading.validate()
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, runtime._safe_error(exc)) from exc
+
+    @app.get("/v1/trading/status", dependencies=[auth])
+    def trading_status() -> dict:
+        return {
+            **runtime.trading.status(),
+            "tasks": store.list_trade_tasks(100),
+            "events": store.list_trade_events(100),
+            "last_error": runtime.last_trading_error,
+        }
+
+    @app.get("/v1/trading/theses/{thesis_id}/orders", dependencies=[auth])
+    def thesis_orders(thesis_id: int) -> list[dict]:
+        return runtime.trading.orders(thesis_id)
+
+    def perform_action(
+        action: str, thesis_id: int, idempotency_key: str | None,
+    ) -> dict:
+        if not idempotency_key:
+            raise HTTPException(400, "Idempotency-Key is required")
+        try:
+            prior, created = store.begin_trade_action(idempotency_key, action, thesis_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if not created:
+            return prior
+        try:
+            result = (
+                runtime.trading.cancel_pending(thesis_id)
+                if action == "cancel"
+                else runtime.trading.close(thesis_id)
+            )
+            return store.finish_trade_action(idempotency_key, "succeeded", result=result)
+        except Exception as exc:
+            error = runtime._safe_error(exc)
+            store.finish_trade_action(idempotency_key, "failed", error=error)
+            raise HTTPException(409, error) from exc
+
+    @app.post("/v1/trading/theses/{thesis_id}/cancel", dependencies=[auth])
+    def cancel_thesis(
+        thesis_id: int,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict:
+        return perform_action("cancel", thesis_id, idempotency_key)
+
+    @app.post("/v1/trading/theses/{thesis_id}/close", dependencies=[auth])
+    def close_thesis(
+        thesis_id: int,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict:
+        return perform_action("close", thesis_id, idempotency_key)
+
     return app
 
 
@@ -178,6 +340,12 @@ def main() -> None:
         settings.feishu.webhook_url,
         settings.feishu.secret,
         *[group.api_key for group in settings.provider.fallback_groups],
+        cfg.okx_demo_api_key,
+        cfg.okx_demo_secret_key,
+        cfg.okx_demo_passphrase,
+        cfg.okx_live_api_key,
+        cfg.okx_live_secret_key,
+        cfg.okx_live_passphrase,
     ]
     configure_logging(settings.provider.api_key)
     update_api_keys(secrets)

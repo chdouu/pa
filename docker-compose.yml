@@ -10,6 +10,12 @@ services:
       PA_FALLBACK_API_KEYS: ${PA_FALLBACK_API_KEYS:-}
       PA_FEISHU_WEBHOOK_URL: ${PA_FEISHU_WEBHOOK_URL:-}
       PA_FEISHU_SECRET: ${PA_FEISHU_SECRET:-}
+      PA_OKX_DEMO_API_KEY: ${PA_OKX_DEMO_API_KEY:-}
+      PA_OKX_DEMO_SECRET_KEY: ${PA_OKX_DEMO_SECRET_KEY:-}
+      PA_OKX_DEMO_PASSPHRASE: ${PA_OKX_DEMO_PASSPHRASE:-}
+      PA_OKX_LIVE_API_KEY: ${PA_OKX_LIVE_API_KEY:-}
+      PA_OKX_LIVE_SECRET_KEY: ${PA_OKX_LIVE_SECRET_KEY:-}
+      PA_OKX_LIVE_PASSPHRASE: ${PA_OKX_LIVE_PASSPHRASE:-}
       PA_TIMEZONE: Asia/Taipei
       TZ: Asia/Taipei
       PA_BIND_HOST: 0.0.0.0
@@ -20,3 +26,9 @@ services:
       - ./data:/app/data
       - ./records:/app/records
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/ready', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s

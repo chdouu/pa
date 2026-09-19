@@ -27,6 +27,12 @@ class ServerConfig:
     port: int
     poll_seconds: int
     timezone: str
+    okx_demo_api_key: str = ""
+    okx_demo_secret_key: str = ""
+    okx_demo_passphrase: str = ""
+    okx_live_api_key: str = ""
+    okx_live_secret_key: str = ""
+    okx_live_passphrase: str = ""
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -41,6 +47,12 @@ class ServerConfig:
             port=int(os.getenv("PA_PORT", "8765")),
             poll_seconds=max(5, int(os.getenv("PA_POLL_SECONDS", "30"))),
             timezone=os.getenv("PA_TIMEZONE", "Asia/Taipei"),
+            okx_demo_api_key=os.getenv("PA_OKX_DEMO_API_KEY", "").strip(),
+            okx_demo_secret_key=os.getenv("PA_OKX_DEMO_SECRET_KEY", "").strip(),
+            okx_demo_passphrase=os.getenv("PA_OKX_DEMO_PASSPHRASE", "").strip(),
+            okx_live_api_key=os.getenv("PA_OKX_LIVE_API_KEY", "").strip(),
+            okx_live_secret_key=os.getenv("PA_OKX_LIVE_SECRET_KEY", "").strip(),
+            okx_live_passphrase=os.getenv("PA_OKX_LIVE_PASSPHRASE", "").strip(),
         )
 
 
@@ -108,5 +120,8 @@ def settings_version(settings: Settings) -> str:
     feishu = data.get("feishu", {})
     for name in ("webhook_url", "secret"):
         feishu.pop(name, None)
+    okx = data.get("okx", {})
+    okx.pop("demo_credentials", None)
+    okx.pop("live_credentials", None)
     raw = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]

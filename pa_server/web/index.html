@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PA Server 控制台</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+  <div id="login" class="overlay"><form id="login-form" class="login-card"><div class="brand-mark">PA</div><h1>PA Server</h1><p>輸入管理 Token 以開啟控制台。Token 只保留在此頁記憶體。</p><input id="token" type="password" autocomplete="off" placeholder="Bearer Token" required><button type="submit">登入</button><div id="login-error" class="error"></div></form></div>
+  <header><div><strong>PA Server</strong><span class="muted">持續分析與交易控制台</span></div><div class="header-actions"><span id="health-badge" class="badge">連線中</span><button class="ghost" id="refresh">重新整理</button><button class="ghost" id="logout">登出</button></div></header>
+  <main>
+    <section class="stats" id="stats"></section>
+    <nav><button class="tab active" data-tab="watches">監控與分析</button><button class="tab" data-tab="trading">OKX 交易</button><button class="tab" data-tab="events">交易紀錄</button></nav>
+    <section id="panel-watches" class="panel active">
+      <div class="card"><div class="card-title"><h2>新增監控</h2><span>建立後分析最近一根已收盤 K 棒</span></div><form id="watch-form" class="form-grid">
+        <label>TradingView 交易所<input name="exchange" value="OKX" required></label><label>商品<input name="symbol" value="BTCUSDT" required></label>
+        <label>週期<select name="timeframe"><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option><option>1w</option><option>1M</option></select></label>
+        <label>K 棒數<input name="bar_count" type="number" min="20" max="5000" value="100"></label><label>OKX 合約<input name="okx_instrument" value="BTC-USDT-SWAP"></label>
+        <label class="check"><input name="trading_enabled" type="checkbox">允許此監控自動交易</label><button type="submit">建立監控</button>
+      </form></div>
+      <div class="card"><div class="card-title"><h2>監控清單</h2><span id="watch-count"></span></div><div class="table-wrap"><table><thead><tr><th>市場</th><th>週期</th><th>狀態</th><th>最新分析</th><th>交易</th><th>操作</th></tr></thead><tbody id="watch-list"></tbody></table></div></div>
+      <div class="card"><div class="card-title"><h2>分析詳情</h2><span id="analysis-title">選擇一組監控查看</span></div><pre id="analysis-detail" class="result">尚未選擇</pre></div>
+    </section>
+    <section id="panel-trading" class="panel">
+      <div class="notice">實盤與模擬交易共用同一套風控。全域開關與監控開關都啟用才會建立新交易。</div>
+      <div class="card"><div class="card-title"><h2>OKX 設定</h2><span id="credential-status"></span></div><form id="trading-form" class="form-grid">
+        <label>環境<select name="profile"><option value="demo">模擬</option><option value="live">實盤</option></select></label><label>API 區域<select name="api_region"><option value="global">Global</option><option value="eea">EEA</option><option value="us">US</option></select></label>
+        <label>保證金模式<select name="margin_mode"><option value="isolated">逐倉</option><option value="cross">全倉</option></select></label><label>槓桿<input name="leverage" type="number" min="1" max="125"></label>
+        <label>倉位方式<select name="sizing_mode"><option value="fixed_notional">固定名目金額</option><option value="fixed_margin">固定保證金</option><option value="risk_percent">資金風險比例</option></select></label>
+        <label>固定名目 USDT<input name="fixed_notional_usdt" type="number" min="0" step="0.01"></label><label>固定保證金 USDT<input name="fixed_margin_usdt" type="number" min="0" step="0.01"></label>
+        <label>風險比例 %<input name="risk_percent" type="number" min="0" max="100" step="0.01"></label><label>每筆名目上限<input name="max_notional_usdt" type="number" min="0" step="0.01"></label>
+        <label>掛單到期棒數<input name="pending_expiry_bars" type="number" min="1" max="100"></label><label>對帳秒數<input name="poll_interval_seconds" type="number" min="1" max="60"></label>
+        <label class="check danger"><input name="enabled" type="checkbox">啟用全域自動交易</label><div class="button-row"><button type="button" id="validate-trading" class="secondary">測試設定</button><button type="submit">儲存設定</button></div>
+      </form></div>
+      <div class="card"><div class="card-title"><h2>進行中的交易方案</h2><span id="trading-error"></span></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>環境／合約</th><th>狀態</th><th>方向</th><th>價格</th><th>數量</th><th>操作</th></tr></thead><tbody id="thesis-list"></tbody></table></div></div>
+    </section>
+    <section id="panel-events" class="panel"><div class="card"><div class="card-title"><h2>交易工作與事件</h2><button id="feishu-test" class="secondary">測試飛書</button></div><div id="event-list" class="event-list"></div></div></section>
+  </main><div id="toast"></div><script src="/static/app.js"></script>
+</body></html>
