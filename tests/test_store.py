@@ -59,6 +59,20 @@ def test_paused_watch_holds_queue_and_delete_cancels_it(tmp_path: Path):
     jobs = store.list_analyses(watch["id"], 10, 0)
     deleted_job = next(item for item in jobs if item["target_ts"] == 2000)
     assert deleted_job["error"]["code"] == "watch_deleted"
+    assert store.enqueue_watch_jobs(watch["id"], REQUEST, [(3000, snapshot)], "v1") == 0
+
+
+def test_active_thesis_snapshot_is_captured_only_once(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite3")
+    watch, _ = store.create_watch(REQUEST, "v1", None)
+    snapshot = [{"seq": 1, "ts_open": 1000, "open": 1, "high": 2, "low": 1,
+                 "close": 2, "volume": 1, "amount": 0, "pct_chg": None, "closed": True}]
+    store.enqueue_watch_jobs(watch["id"], REQUEST, [(1000, snapshot)], "v1")
+    job = store.claim_job()
+    first = store.capture_job_active_thesis(job["id"], {"id": 7, "current_tp1": "110"})
+    second = store.capture_job_active_thesis(job["id"], {"id": 8, "current_tp1": "105"})
+    assert first["active_thesis_captured"] is True
+    assert second["active_thesis"] == {"id": 7, "current_tp1": "110"}
 
 
 def test_analysis_and_trade_task_are_committed_and_result_is_updated(tmp_path: Path):

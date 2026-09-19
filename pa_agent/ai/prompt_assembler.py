@@ -342,7 +342,7 @@ _STAGE2_OUTPUT_CONTRACT = """
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
 禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
 JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
-重要规则：当 order_type 为“不下单”时，entry_price、entry_zone_low、entry_zone_high、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。若存在上一轮交易假设，可仅用 proposed_entry_price / proposed_stop_loss_price 提出调整建议；止损建议只能收紧风险。
+重要规则：当 order_type 为“不下单”时，entry_price、entry_zone_low、entry_zone_high、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。若存在 Active Thesis，仍可用 proposed_entry_price / proposed_stop_loss_price 或 TP 更新字段提出调整建议；止损建议只能收紧风险。
 
 ```json
 {
@@ -354,6 +354,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "entry_zone_high": null,
     "proposed_entry_price": null,
     "proposed_stop_loss_price": null,
+    "tp_update_action": "none|lower_tp1|raise_tp2",
+    "proposed_take_profit_price": null,
+    "proposed_take_profit_price_2": null,
+    "tp_update_reason": null,
     "entry_basis_bar": null,
     "entry_basis_extreme": null,
     "entry_rule": null,
@@ -1483,6 +1487,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         *,
         decision_stance: str = "conservative",
+        active_thesis: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Build a standalone Stage 2 request (kept for tests/tools)."""
         system_content = self._build_stage2_system_prompt()
@@ -1492,6 +1497,7 @@ class PromptAssembler:
             strategy_files=strategy_files,
             experience_entries=experience_entries,
             decision_stance=decision_stance,
+            active_thesis=active_thesis,
             enable_next_bar_prediction=False,
         )
         return [
@@ -1563,6 +1569,7 @@ class PromptAssembler:
         provider_settings: Any | None = None,
         use_prefix_chain: bool | None = None,
         structure_flip_cooldown_bars: int = 3,
+        active_thesis: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Build Stage 2 messages, optionally chaining after Stage 1 for KV cache.
 
@@ -1588,6 +1595,7 @@ class PromptAssembler:
             enable_next_bar_prediction=enable_next_bar_prediction,
             omit_kline_block=chain_after_s1,
             structure_flip_cooldown_bars=structure_flip_cooldown_bars,
+            active_thesis=active_thesis,
         )
 
         if chain_after_s1:
@@ -1606,6 +1614,23 @@ class PromptAssembler:
             {"role": "user", "content": stage2_user_content},
         ]
 
+    @staticmethod
+    def _render_active_thesis(active_thesis: dict[str, Any] | None) -> str:
+        if not active_thesis:
+            return ""
+        snapshot = json.dumps(active_thesis, ensure_ascii=False, indent=2)
+        return (
+            "## OKX Active Thesis（交易连续性的唯一依据）\n\n"
+            f"```json\n{snapshot}\n```\n\n"
+            "仅当本次分析周期与 Thesis.timeframe 相同，才可提出交易修改。"
+            "动能不足、阻力附近出现多根小实体长上影或铁丝网时，可选择 lower_tp1，"
+            "把 proposed_take_profit_price 移到当前震荡区上沿；"
+            "强势大阳趋势棒突破关键高点且顺势端影线很小时，可选择 raise_tp2，"
+            "把 proposed_take_profit_price_2 移到更远的有效结构目标。"
+            "空单按支撑、下影线和强势下破镜像处理。"
+            "每次只能选择一种 TP 动作；不得改变仓位数量，也不得用普通 take_profit_price 字段覆盖 Active Thesis。"
+        )
+
     def _build_stage2_user_prompt(
         self,
         *,
@@ -1618,6 +1643,7 @@ class PromptAssembler:
         enable_next_bar_prediction: bool = False,
         omit_kline_block: bool = False,
         structure_flip_cooldown_bars: int = 3,
+        active_thesis: dict[str, Any] | None = None,
     ) -> str:
         """Build the Stage 2 task turn for standalone or prefix-chain mode."""
         from pa_agent.ai.decision_continuity import (
@@ -1636,12 +1662,14 @@ class PromptAssembler:
         conflict_block = self._render_trend_conflict_guidance(stage1_json)
         transition_block = self._render_transition_guidance(stage1_json)
         planned_limit_block = self._render_planned_limit_hint(stage1_json, frame)
+        active_thesis_block = self._render_active_thesis(active_thesis)
         stage2_parts = [
             stance_block,
             continuity_block,
             conflict_block,
             transition_block,
             planned_limit_block,
+            active_thesis_block,
             *(
                 self._load(name)
                 for name in stage2_user_task_txt_files(

@@ -107,7 +107,7 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
         finally:
             runtime.close()
 
-    app = FastAPI(title="PA Server", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="PA Server", version="0.3.0", lifespan=lifespan)
     app.state.runtime = runtime
     web_dir = Path(__file__).resolve().parent / "web"
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
@@ -205,10 +205,15 @@ def create_app(config: ServerConfig | None = None, settings=None, store: Store |
             raise HTTPException(404, "Watch not found")
         instrument = watch.get("okx_instrument") or ""
         if instrument and any(
-            row["inst_id"] == instrument
+            row.get("watch_id") == watch_id
+            or (
+                not row.get("watch_id")
+                and row["inst_id"] == instrument
+                and row.get("timeframe") == watch.get("timeframe")
+            )
             for row in runtime.trading.service.store.active_all()
         ):
-            raise HTTPException(409, "Cannot delete a watch while its trading thesis is active")
+            raise HTTPException(409, "此監控仍有未完成交易方案，請先取消掛單或平倉")
         if not store.delete_watch(watch_id):
             raise HTTPException(404, "Watch not found")
         runtime.trading.refresh_mappings()

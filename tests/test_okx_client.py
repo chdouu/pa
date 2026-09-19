@@ -77,3 +77,27 @@ def test_client_uses_selected_regional_host():
     client.account_config()
     assert captured["host"] == "us.okx.com"
     client.close()
+
+
+def test_amend_algo_order_sends_tp_only_and_preserves_original_on_failure_policy():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "code": "0", "data": [{"algoId": "a1", "reqId": "r1", "sCode": "0"}]
+        })
+
+    client = OKXClient(
+        OKXCredentials("key", "secret", "pass"), profile="demo",
+        transport=httpx.MockTransport(handler),
+    )
+    client.amend_algo_order("BTC-USDT-SWAP", "a1", tp_trigger_px="105", req_id="r1")
+    assert captured["path"] == "/api/v5/trade/amend-algos"
+    assert captured["payload"] == {
+        "instId": "BTC-USDT-SWAP", "algoId": "a1",
+        "newTpTriggerPx": "105", "newTpOrdPx": "-1",
+        "newTpTriggerPxType": "mark", "cxlOnFail": False, "reqId": "r1",
+    }
+    client.close()

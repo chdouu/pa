@@ -67,6 +67,7 @@ class Store:
               id TEXT PRIMARY KEY, watch_id TEXT REFERENCES watches(id), target_ts INTEGER,
               request_json TEXT NOT NULL, snapshot_json TEXT, settings_version TEXT NOT NULL,
               status TEXT NOT NULL, progress TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+              active_thesis_json TEXT, active_thesis_captured INTEGER NOT NULL DEFAULT 0,
               result_json TEXT, record_json TEXT, error_json TEXT,
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
               UNIQUE(watch_id, target_ts)
@@ -117,6 +118,13 @@ class Store:
                 db.execute("ALTER TABLE watches ADD COLUMN trading_enabled INTEGER NOT NULL DEFAULT 0")
             if "okx_instrument" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN okx_instrument TEXT NOT NULL DEFAULT ''")
+            job_columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "active_thesis_json" not in job_columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN active_thesis_json TEXT")
+            if "active_thesis_captured" not in job_columns:
+                db.execute(
+                    "ALTER TABLE jobs ADD COLUMN active_thesis_captured INTEGER NOT NULL DEFAULT 0"
+                )
             db.execute(
                 "INSERT OR IGNORE INTO trading_settings(id,settings_json,updated_at) VALUES (1,?,?)",
                 (json.dumps(DEFAULT_TRADING_SETTINGS), utc_now()),
@@ -139,6 +147,8 @@ class Store:
             item["extended_session"] = bool(item["extended_session"])
         if "trading_enabled" in item:
             item["trading_enabled"] = bool(item["trading_enabled"])
+        if "active_thesis_captured" in item:
+            item["active_thesis_captured"] = bool(item["active_thesis_captured"])
         return item
 
     def create_watch(self, request: dict, version: str, key: str | None) -> tuple[dict, bool]:
@@ -217,7 +227,8 @@ class Store:
 
     def delete_watch(self, watch_id: str) -> bool:
         stamp = utc_now()
-        with self.connect() as db:
+        with self._lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             cur = db.execute("UPDATE watches SET state='deleted', deleted_at=?, updated_at=? WHERE id=? AND deleted_at IS NULL", (stamp, stamp, watch_id))
             if cur.rowcount:
                 error = json.dumps({"code": "watch_deleted", "message": "Watch was deleted before analysis started"})
@@ -228,6 +239,11 @@ class Store:
         stamp, created = utc_now(), 0
         with self._lock, self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            watch = db.execute(
+                "SELECT state,deleted_at FROM watches WHERE id=?", (watch_id,)
+            ).fetchone()
+            if not watch or watch["state"] != "active" or watch["deleted_at"] is not None:
+                return 0
             for target_ts, snapshot in snapshots:
                 job_id = str(uuid.uuid4())
                 cur = db.execute("""INSERT OR IGNORE INTO jobs
@@ -283,6 +299,19 @@ class Store:
                 "UPDATE jobs SET target_ts=?,snapshot_json=?,updated_at=? WHERE id=?",
                 (target_ts, json.dumps(snapshot, ensure_ascii=False), utc_now(), job_id),
             )
+
+    def capture_job_active_thesis(
+        self, job_id: str, active_thesis: dict | None,
+    ) -> dict:
+        value = json.dumps(active_thesis or {}, ensure_ascii=False)
+        with self._lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE jobs SET active_thesis_json=?,active_thesis_captured=1,updated_at=? "
+                "WHERE id=? AND active_thesis_captured=0",
+                (value, utc_now(), job_id),
+            )
+            return self.decode(db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
 
     def finish_job(
         self, job_id: str, result: dict, record: dict, notify: bool, trade: bool = False,

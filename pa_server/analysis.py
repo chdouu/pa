@@ -136,6 +136,7 @@ def run_snapshot_analysis(
             frame, CancelToken(), on_event,
             previous_record=previous,
             incremental_new_bar_count=incremental_count,
+            active_thesis=job.get("active_thesis") or None,
         )
     finally:
         if set_progress is not None:
@@ -173,6 +174,7 @@ def run_snapshot_analysis(
         "ai_providers_by_stage": ai_by_stage,
         "stage1_diagnosis": record.stage1_diagnosis,
         "stage2_decision": record.stage2_decision,
+        "active_thesis": job.get("active_thesis") or None,
         "usage_total": record.usage_total,
         "stale": False,
         "notification_status": "not_required",

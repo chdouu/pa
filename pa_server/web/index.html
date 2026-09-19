@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PA Server 控制台</title><link rel="stylesheet" href="/static/style.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PA Server 控制台</title><link rel="stylesheet" href="/static/style.css"><style>.danger-button{background:#7d2730;color:#fff}.danger-button:hover{background:#a33440}</style></head>
 <body>
   <div id="login" class="overlay"><form id="login-form" class="login-card"><div class="brand-mark">PA</div><h1>PA Server</h1><p>輸入管理 Token 以開啟控制台。Token 只保留在此頁記憶體。</p><input id="token" type="password" autocomplete="off" placeholder="Bearer Token" required><button type="submit">登入</button><div id="login-error" class="error"></div></form></div>
   <header><div><strong>PA Server</strong><span class="muted">持續分析與交易控制台</span></div><div class="header-actions"><span id="health-badge" class="badge">連線中</span><button class="ghost" id="refresh">重新整理</button><button class="ghost" id="logout">登出</button></div></header>

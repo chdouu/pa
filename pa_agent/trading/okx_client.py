@@ -205,6 +205,25 @@ class OKXClient:
             raise OKXError(str(row.get("sMsg") or "保护委托被拒绝"), code=str(row.get("sCode")))
         return row
 
+    def amend_algo_order(
+        self, inst_id: str, algo_id: str, *, tp_trigger_px: str, req_id: str = ""
+    ) -> dict[str, Any]:
+        payload = {
+            "instId": inst_id,
+            "algoId": algo_id,
+            "newTpTriggerPx": tp_trigger_px,
+            "newTpOrdPx": "-1",
+            "newTpTriggerPxType": "mark",
+            "cxlOnFail": False,
+        }
+        if req_id:
+            payload["reqId"] = req_id
+        data = self.request("POST", "/api/v5/trade/amend-algos", payload=payload)
+        row = data[0] if data else {}
+        if str(row.get("sCode", "0")) != "0":
+            raise OKXError(str(row.get("sMsg") or "止盈修改被拒绝"), code=str(row.get("sCode")))
+        return row
+
     def cancel_algos(self, items: list[dict[str, str]]) -> list[dict[str, Any]]:
         return self.request("POST", "/api/v5/trade/cancel-algos", payload=items)
 

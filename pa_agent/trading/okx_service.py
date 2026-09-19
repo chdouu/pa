@@ -26,6 +26,13 @@ def _price(value: Any) -> Decimal:
     return result
 
 
+def _same_price(left: Any, right: Any) -> bool:
+    try:
+        return D(left) == D(right)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _direction(value: Any) -> str:
     text = str(value or "").lower()
     if any(word in text for word in ("多", "long", "buy", "bull")):
@@ -38,6 +45,13 @@ def _direction(value: Any) -> str:
 def _client_id(profile: str, inst_id: str, bar_ts: int) -> str:
     digest = hashlib.sha256(f"{profile}:{inst_id}:{bar_ts}".encode()).hexdigest()[:20]
     return f"pa{digest}"[:32]
+
+
+def _amendment_id(profile: str, inst_id: str, bar_ts: int, action: str) -> str:
+    digest = hashlib.sha256(
+        f"{profile}:{inst_id}:{bar_ts}:{action}".encode()
+    ).hexdigest()[:20]
+    return f"pt{digest}"[:32]
 
 
 class OKXTradingService:
@@ -125,26 +139,58 @@ class OKXTradingService:
             raise ValueError(f"{symbol} 未映射到 OKX USDT 永续合约")
         return inst_id
 
+    def active_thesis_context(self, exchange: str, symbol: str) -> dict[str, Any] | None:
+        """Return a prompt-safe snapshot of the exchange-backed active thesis."""
+        if exchange.strip().upper() != "OKX":
+            return None
+        try:
+            inst_id = self.mapped_instrument(symbol)
+            thesis = self.store.active(self.cfg.profile, inst_id, self.account_id())
+        except Exception:  # noqa: BLE001
+            return None
+        if not thesis:
+            return None
+        keys = (
+            "id", "profile", "inst_id", "watch_id", "timeframe", "status", "direction",
+            "original_entry", "current_entry", "original_stop", "current_stop",
+            "tp1", "tp2", "current_tp1", "current_tp2", "total_size",
+            "filled_size", "protected_size", "reason", "confidence",
+        )
+        return {key: thesis.get(key) for key in keys}
+
     def submit_analysis(
         self, *, exchange: str, symbol: str, timeframe: str, bar_ts: int,
         decision: dict[str, Any], stage2_full: dict[str, Any] | None = None,
-        bar_high: Any = None, bar_low: Any = None,
+        bar_high: Any = None, bar_low: Any = None, bar_close: Any = None,
+        watch_id: str = "",
     ) -> dict[str, Any]:
         """Apply one closed-bar analysis to the single active thesis."""
-        if not self.cfg.enabled:
-            return {"action": "disabled"}
         if exchange.strip().upper() != "OKX":
             return {"action": "ignored", "reason": "自动交易只接受 TradingView OKX 行情"}
-        inst_id = self.mapped_instrument(symbol)
+        if not self.cfg.enabled:
+            try:
+                inst_id = self.mapped_instrument(symbol)
+                account_id = self.account_id()
+                active = self.store.active(self.cfg.profile, inst_id, account_id)
+            except Exception:  # noqa: BLE001
+                return {"action": "disabled"}
+            if not active:
+                return {"action": "disabled"}
+        else:
+            inst_id = self.mapped_instrument(symbol)
+            account_id = self.account_id()
         with self._lock:
             client = self.client()
             try:
-                active = self.store.active(self.cfg.profile, inst_id, self.account_id())
+                active = self.store.active(self.cfg.profile, inst_id, account_id)
                 if active:
+                    if watch_id and active.get("watch_id") and active["watch_id"] != watch_id:
+                        return {"action": "ignored", "reason": "Active Thesis 属于其他监控"}
                     return self._update_active(
-                        client, active, timeframe, bar_ts, decision, bar_high, bar_low
+                        client, active, timeframe, bar_ts, decision,
+                        bar_high, bar_low, bar_close,
                     )
-                latest = self.store.latest(self.account_id(), self.cfg.profile, inst_id)
+                latest = self.store.latest(account_id, self.cfg.profile, inst_id)
                 if latest and bar_ts <= int(latest["last_bar_ts"]):
                     return {"action": "wait_next_bar", "reason": "上一 Thesis 结束后需等待下一根收盘 K 棒"}
                 order_type = str(decision.get("order_type") or "")
@@ -160,13 +206,15 @@ class OKXTradingService:
                         "action": "observed",
                         "reason": f"交易置信度 {confidence} 低于门槛 {threshold}",
                     }
-                return self._create_thesis(client, inst_id, timeframe, bar_ts, decision)
+                return self._create_thesis(
+                    client, inst_id, timeframe, bar_ts, decision, watch_id=watch_id
+                )
             finally:
                 client.close()
 
     def _create_thesis(
         self, client: OKXClient, inst_id: str, timeframe: str,
-        bar_ts: int, decision: dict[str, Any],
+        bar_ts: int, decision: dict[str, Any], *, watch_id: str = "",
     ) -> dict[str, Any]:
         self.validate_configuration(client)
         instrument = client.public_instrument(inst_id)
@@ -213,14 +261,15 @@ class OKXTradingService:
         cl_ord_id = _client_id(self.cfg.profile, inst_id, bar_ts)
         values = {
             "account_id": self.account_id(), "profile": self.cfg.profile,
-            "inst_id": inst_id, "timeframe": timeframe,
+            "inst_id": inst_id, "watch_id": watch_id, "timeframe": timeframe,
             "status": "PENDING_SUBMIT", "direction": direction,
             "order_type": str(decision["order_type"]), "source_bar_ts": bar_ts,
             "last_bar_ts": bar_ts, "entry_zone_low": decimal_text(zone_low),
             "entry_zone_high": decimal_text(zone_high), "original_entry": decimal_text(entry),
             "current_entry": decimal_text(entry), "original_stop": decimal_text(stop),
             "current_stop": decimal_text(stop), "tp1": decimal_text(tp1),
-            "tp2": decimal_text(tp2), "total_size": decimal_text(total),
+            "tp2": decimal_text(tp2), "current_tp1": decimal_text(tp1),
+            "current_tp2": decimal_text(tp2), "total_size": decimal_text(total),
             "tp1_size": decimal_text(size1), "tp2_size": decimal_text(size2),
             "cl_ord_id": cl_ord_id, "reason": str(decision.get("reasoning") or ""),
             "confidence": decision.get("trade_confidence"),
@@ -273,7 +322,7 @@ class OKXTradingService:
 
     def _update_active(
         self, client: OKXClient, thesis: dict[str, Any], timeframe: str, bar_ts: int,
-        decision: dict[str, Any], bar_high: Any, bar_low: Any,
+        decision: dict[str, Any], bar_high: Any, bar_low: Any, bar_close: Any,
     ) -> dict[str, Any]:
         self._reconcile_one(client, thesis)
         thesis = self.store.active(thesis["profile"], thesis["inst_id"], thesis["account_id"])
@@ -310,7 +359,156 @@ class OKXTradingService:
             self._maybe_amend_entry(client, thesis, decision)
         if thesis["status"] == "OPEN":
             self._maybe_tighten_stop(client, thesis, decision)
+            self._maybe_amend_take_profit(
+                client, thesis, decision, bar_ts=bar_ts, bar_close=bar_close
+            )
         return {"action": "updated", "thesis_id": thesis["id"]}
+
+    def _maybe_amend_take_profit(
+        self, client: OKXClient, thesis: dict[str, Any], decision: dict[str, Any],
+        *, bar_ts: int, bar_close: Any,
+    ) -> None:
+        action = str(decision.get("tp_update_action") or "none").strip().lower()
+        if action not in {"lower_tp1", "raise_tp2"}:
+            return
+        field = (
+            "proposed_take_profit_price"
+            if action == "lower_tp1"
+            else "proposed_take_profit_price_2"
+        )
+        if decision.get(field) is None:
+            return
+        spec = InstrumentSpec.from_okx(client.public_instrument(thesis["inst_id"]))
+        target = spec.round_price(_price(decision[field]))
+        entry = D(thesis["original_entry"])
+        current_tp1 = D(thesis.get("current_tp1") or thesis["tp1"])
+        current_tp2 = D(thesis.get("current_tp2") or thesis["tp2"])
+        close = _price(bar_close) if bar_close is not None else None
+        direction = thesis["direction"]
+        valid = False
+        if action == "lower_tp1":
+            if direction == "long":
+                floor = max(entry, close) if close is not None else entry
+                valid = floor < target < current_tp1 and target < current_tp2
+            else:
+                ceiling = min(entry, close) if close is not None else entry
+                valid = current_tp1 < target < ceiling and current_tp2 < target
+        elif direction == "long":
+            valid = target > current_tp2 and target > current_tp1
+        else:
+            valid = target < current_tp2 and target < current_tp1
+        if not valid:
+            self._emit(
+                "TP_AMEND_REJECTED", thesis_id=thesis["id"], action=action,
+                target=decimal_text(target), reason="建议价格不符合只收近 TP1／扩展 TP2 的限制",
+            )
+            return
+        req_id = _amendment_id(thesis["profile"], thesis["inst_id"], bar_ts, action)
+        self.store.queue_tp_amendment(
+            thesis["id"], bar_ts, action, decimal_text(target), req_id,
+            str(decision.get("tp_update_reason") or decision.get("reasoning") or ""),
+        )
+        self._apply_pending_tp_amendments(client, thesis)
+
+    def _apply_pending_tp_amendments(
+        self, client: OKXClient, thesis: dict[str, Any]
+    ) -> None:
+        for amendment in self.store.pending_tp_amendments(thesis["id"]):
+            action = amendment["action"]
+            leg = "TP1" if action == "lower_tp1" else "TP2"
+            target = str(amendment["target_price"])
+            matched = 0
+            unresolved = False
+            for order in self.store.orders(thesis["id"]):
+                if order["role"] != "PROTECTION" or not order["algo_id"]:
+                    continue
+                try:
+                    detail = client.get_algo_order(order["algo_id"])
+                except OKXError as exc:
+                    unresolved = True
+                    self.store.update_tp_amendment(
+                        amendment["id"], status="RECONCILE", last_error=str(exc)
+                    )
+                    continue
+                state = str(detail.get("state") or order["state"] or "")
+                actual_tp = str(detail.get("tpTriggerPx") or order.get("trigger_price") or "")
+                order_leg = str(order.get("protection_leg") or "")
+                if not order_leg:
+                    tp1_values = {
+                        str(thesis["tp1"]),
+                        str(thesis.get("current_tp1") or thesis["tp1"]),
+                    }
+                    tp2_values = {
+                        str(thesis["tp2"]),
+                        str(thesis.get("current_tp2") or thesis["tp2"]),
+                    }
+                    if any(_same_price(actual_tp, value) for value in tp1_values):
+                        order_leg = "TP1"
+                    elif any(_same_price(actual_tp, value) for value in tp2_values):
+                        order_leg = "TP2"
+                    elif _same_price(actual_tp, target):
+                        order_leg = leg
+                self.store.update_order(
+                    order["id"], state=state, protection_leg=order_leg,
+                    trigger_price=actual_tp,
+                    stop_price=str(detail.get("slTriggerPx") or order.get("stop_price") or ""),
+                )
+                if order_leg != leg or state not in {"live", "pause"}:
+                    continue
+                matched += 1
+                if _same_price(actual_tp, target):
+                    continue
+                try:
+                    order_req_id = "pt" + hashlib.sha256(
+                        f"{amendment['req_id']}:{order['algo_id']}".encode()
+                    ).hexdigest()[:20]
+                    client.amend_algo_order(
+                        thesis["inst_id"], order["algo_id"],
+                        tp_trigger_px=target, req_id=order_req_id,
+                    )
+                    check = client.get_algo_order(order["algo_id"])
+                except OKXError as exc:
+                    # A timed-out write may still have reached OKX. Query before
+                    # leaving it for the next reconciliation pass.
+                    try:
+                        check = client.get_algo_order(order["algo_id"])
+                    except OKXError:
+                        check = {}
+                    if not _same_price(check.get("tpTriggerPx") or actual_tp, target):
+                        unresolved = True
+                        self.store.update_tp_amendment(
+                            amendment["id"], status="RECONCILE", last_error=str(exc)
+                        )
+                        continue
+                if not _same_price(check.get("tpTriggerPx") or actual_tp, target):
+                    unresolved = True
+                    self.store.update_tp_amendment(
+                        amendment["id"], status="RECONCILE",
+                        last_error=f"{leg} 修改已受理但交易所状态尚未更新",
+                    )
+                    continue
+                self.store.update_order(order["id"], trigger_price=target)
+            if unresolved:
+                self.store.update(
+                    thesis["id"], last_error=f"{leg} 修改待核对"
+                )
+                continue
+            if matched == 0:
+                self.store.update_tp_amendment(
+                    amendment["id"], status="OBSOLETE", last_error=f"{leg} 已无有效委托"
+                )
+                continue
+            column = "current_tp1" if leg == "TP1" else "current_tp2"
+            self.store.update(thesis["id"], **{column: target, "last_error": ""})
+            thesis = {**thesis, column: target}
+            self.store.update_tp_amendment(
+                amendment["id"], status="APPLIED", last_error=""
+            )
+            self._emit(
+                "TP1_LOWERED" if leg == "TP1" else "TP2_RAISED",
+                thesis_id=thesis["id"], inst_id=thesis["inst_id"],
+                price=target, reason=str(amendment.get("reason") or "PA Active Thesis 更新"),
+            )
 
     def _maybe_amend_entry(self, client: OKXClient, thesis: dict[str, Any], decision: dict[str, Any]) -> None:
         proposed = decision.get("proposed_entry_price")
@@ -392,6 +590,7 @@ class OKXTradingService:
                 self.store.update(thesis["id"], last_error=f"保护委托失败：{exc}")
                 self._emergency_flatten(client, thesis, filled)
                 raise
+        self._apply_pending_tp_amendments(client, thesis)
         state = str(snapshot.get("state") or "")
         if filled > 0:
             self.store.update(thesis["id"], status="OPEN", last_error="")
@@ -424,16 +623,16 @@ class OKXTradingService:
         tp1_remaining = max(D(0), D(thesis["tp1_size"]) - protected)
         to_tp1 = min(delta, tp1_remaining)
         to_tp2 = delta - to_tp1
-        chunks = []
+        chunks: list[tuple[Decimal, str, str]] = []
         if to_tp1 >= spec.min_size:
-            chunks.append((to_tp1, thesis["tp1"]))
+            chunks.append((to_tp1, str(thesis.get("current_tp1") or thesis["tp1"]), "TP1"))
         if to_tp2 >= spec.min_size:
-            chunks.append((to_tp2, thesis["tp2"]))
-        if sum((size for size, _ in chunks), D(0)) != delta:
+            chunks.append((to_tp2, str(thesis.get("current_tp2") or thesis["tp2"]), "TP2"))
+        if sum((size for size, _, _ in chunks), D(0)) != delta:
             raise SizingError("部分成交量无法按 OKX 最小张数建立保护单")
         created: list[dict[str, str]] = []
         try:
-            for size, tp in chunks:
+            for size, tp, leg in chunks:
                 client_id = _client_id(thesis["profile"], thesis["inst_id"], int(thesis["source_bar_ts"]) + len(self.store.orders(thesis["id"])) + 1)
                 row = client.place_algo_order({
                     "instId": thesis["inst_id"], "tdMode": self.cfg.margin_mode,
@@ -448,6 +647,8 @@ class OKXTradingService:
                 self.store.order(
                     thesis["id"], "PROTECTION", algo_id=algo_id, client_id=client_id,
                     size=decimal_text(size), state="live", raw=row,
+                    protection_leg=leg, trigger_price=tp,
+                    stop_price=str(thesis["current_stop"]),
                 )
         except Exception:
             if created:

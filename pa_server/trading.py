@@ -105,12 +105,58 @@ class ServerTradingController:
             "credentials_configured": self.credential_status(),
         }
 
+    def _active_for_watch(self, watch: dict, *, bind_legacy: bool = True) -> dict | None:
+        instrument = str(watch.get("okx_instrument") or "").upper()
+        if not instrument or watch.get("exchange") != "OKX":
+            return None
+        try:
+            thesis = self.service.store.active(
+                self.settings.okx.profile, instrument, self.service.account_id()
+            )
+        except Exception:
+            return None
+        if not thesis or thesis.get("timeframe") != watch.get("timeframe"):
+            return None
+        owner = str(thesis.get("watch_id") or "")
+        if owner:
+            return thesis if owner == watch["id"] else None
+        candidates = [
+            item for item in self.store.list_watches()
+            if str(item.get("okx_instrument") or "").upper() == instrument
+            and item.get("timeframe") == thesis.get("timeframe")
+        ]
+        if len(candidates) != 1 or candidates[0]["id"] != watch["id"]:
+            return None
+        if bind_legacy:
+            self.service.store.update(thesis["id"], watch_id=watch["id"])
+            thesis = {**thesis, "watch_id": watch["id"]}
+        return thesis
+
+    def active_thesis_context(self, watch: dict) -> dict | None:
+        thesis = self._active_for_watch(watch)
+        if not thesis:
+            return None
+        keys = (
+            "id", "profile", "inst_id", "watch_id", "timeframe", "status",
+            "direction", "original_entry", "current_entry", "original_stop",
+            "current_stop", "tp1", "tp2", "current_tp1", "current_tp2",
+            "total_size", "filled_size", "protected_size", "reason", "confidence",
+        )
+        return {key: thesis.get(key) for key in keys}
+
     def submit_job(self, job: dict, watch: dict) -> dict:
         self.refresh_mappings()
         instrument = str(watch.get("okx_instrument") or "").upper()
         if not instrument:
             return {"action": "ignored", "reason": "監控未設定 OKX 合約"}
         self.settings.okx.symbol_mappings[watch["symbol"].upper()] = instrument
+        frozen = job.get("active_thesis") or None
+        current = self._active_for_watch(watch)
+        if frozen:
+            if not current or int(current["id"]) != int(frozen.get("id", -1)):
+                return {"action": "ignored", "reason": "Active Thesis 已结束或归属已改变"}
+        elif current:
+            return {"action": "ignored", "reason": "分析未包含目前 Active Thesis 快照"}
         decision = (job["result"].get("stage2_decision") or {}).get("decision") or {}
         target = next(
             (bar for bar in (job.get("snapshot") or []) if int(bar["ts_open"]) == int(job["target_ts"])),
@@ -125,6 +171,8 @@ class ServerTradingController:
             stage2_full=job["result"].get("stage2_decision") or {},
             bar_high=target.get("high"),
             bar_low=target.get("low"),
+            bar_close=target.get("close"),
+            watch_id=watch["id"],
         )
 
     def reconcile(self) -> None:

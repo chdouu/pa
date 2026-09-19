@@ -86,3 +86,51 @@ def test_watch_trading_requires_okx_usdt_swap(tmp_path: Path):
             "trading_enabled": True, "okx_instrument": "BTC-USDT-SWAP",
         }, headers=headers)
         assert response.status_code == 422
+
+
+def test_watch_can_be_deleted_while_history_remains_queryable(tmp_path: Path):
+    headers = {"Authorization": "Bearer test-token", "Idempotency-Key": "delete-me"}
+    auth = {"Authorization": "Bearer test-token"}
+    with TestClient(app_for(tmp_path)) as client:
+        created = client.post("/v1/watches", json={
+            "exchange": "OKX", "symbol": "BTCUSDT", "timeframe": "15m",
+        }, headers=headers).json()
+        assert client.delete(f"/v1/watches/{created['id']}", headers=auth).status_code == 204
+        assert all(item["id"] != created["id"] for item in client.get("/v1/watches", headers=auth).json())
+        history = client.get(f"/v1/watches/{created['id']}/analyses", headers=auth)
+        assert history.status_code == 200
+
+
+def test_dashboard_exposes_confirmed_watch_delete_action(tmp_path: Path):
+    with TestClient(app_for(tmp_path)) as client:
+        script = client.get("/static/app.js").text
+        assert 'data-action="delete"' in script
+        assert "歷史分析會保留" in script
+
+
+def test_watch_with_active_thesis_cannot_be_deleted(tmp_path: Path, monkeypatch):
+    app = app_for(tmp_path)
+    auth = {"Authorization": "Bearer test-token"}
+    with TestClient(app) as client:
+        created = client.post("/v1/watches", json={
+            "exchange": "OKX", "symbol": "BTCUSDT", "timeframe": "15m",
+            "okx_instrument": "BTC-USDT-SWAP",
+        }, headers={**auth, "Idempotency-Key": "active-delete"}).json()
+        monkeypatch.setattr(
+            app.state.runtime.trading.service.store,
+            "active_all",
+            lambda *args, **kwargs: [{
+                "inst_id": "BTC-USDT-SWAP", "timeframe": "15m", "watch_id": "",
+            }],
+        )
+        response = client.delete(f"/v1/watches/{created['id']}", headers=auth)
+        assert response.status_code == 409
+        assert "未完成交易方案" in response.json()["detail"]
+        monkeypatch.setattr(
+            app.state.runtime.trading.service.store,
+            "active_all",
+            lambda *args, **kwargs: [{
+                "inst_id": "BTC-USDT-SWAP", "timeframe": "1h", "watch_id": "",
+            }],
+        )
+        assert client.delete(f"/v1/watches/{created['id']}", headers=auth).status_code == 204

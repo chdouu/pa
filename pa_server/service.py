@@ -114,6 +114,11 @@ class Runtime:
                     self.store.set_job_snapshot(job["id"], job["target_ts"], job["snapshot"])
                 if job.get("watch_id"):
                     job["previous_record"] = self.store.previous_record(job["watch_id"], int(job["target_ts"]), job["settings_version"])
+                    if not job.get("active_thesis_captured"):
+                        job = self._capture_active_thesis(job)
+                        job["previous_record"] = self.store.previous_record(
+                            job["watch_id"], int(job["target_ts"]), job["settings_version"]
+                        )
                 result, record = run_snapshot_analysis(
                     job, self.settings, self.config.root,
                     lambda stage: self.store.update_job_progress(job["id"], stage),
@@ -131,9 +136,11 @@ class Runtime:
                 watch = self.store.get_watch(job["watch_id"]) if job.get("watch_id") else None
                 trade = bool(
                     watch
-                    and watch.get("trading_enabled")
-                    and self.settings.okx.enabled
                     and watch.get("state") == "active"
+                    and (
+                        (watch.get("trading_enabled") and self.settings.okx.enabled)
+                        or job.get("active_thesis")
+                    )
                 )
                 result["trading_status"] = "pending" if trade else "not_required"
                 self.store.finish_job(job["id"], result, record, notify, trade)
@@ -142,6 +149,16 @@ class Runtime:
             except Exception as exc:
                 logger.exception("analysis job=%s failed", job["id"])
                 self.store.fail_job(job["id"], "internal_error", self._safe_error(exc))
+
+    def _capture_active_thesis(self, job: dict) -> dict:
+        active_thesis = None
+        watch = self.store.get_watch(job["watch_id"])
+        try:
+            if watch and latest_closed_ts(job["request"]) == int(job["target_ts"]):
+                active_thesis = self.trading.active_thesis_context(watch)
+        except Exception:
+            active_thesis = None
+        return self.store.capture_job_active_thesis(job["id"], active_thesis)
 
     def _notification_loop(self) -> None:
         while not self.stop.is_set():
@@ -237,11 +254,15 @@ class Runtime:
             self.store.finish_trade_task(task["id"], "failed", error="Analysis or watch missing")
             return
         try:
-            if not self.settings.okx.enabled:
+            if watch["state"] != "active":
+                self.store.finish_trade_task(task["id"], "skipped", result={"reason": "watch_disabled"})
+                return
+            managing_existing = bool(job.get("active_thesis"))
+            if not managing_existing and not self.settings.okx.enabled:
                 self.store.finish_trade_task(task["id"], "skipped", result={"reason": "global_disabled"})
                 return
-            if watch["state"] != "active" or not watch.get("trading_enabled"):
-                self.store.finish_trade_task(task["id"], "skipped", result={"reason": "watch_disabled"})
+            if not managing_existing and not watch.get("trading_enabled"):
+                self.store.finish_trade_task(task["id"], "skipped", result={"reason": "watch_trading_disabled"})
                 return
             if job["settings_version"] != self.version:
                 self.store.finish_trade_task(

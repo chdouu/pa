@@ -352,6 +352,13 @@ _DECISION_BASE: dict = {
         "entry_zone_high": {"type": ["number", "null"]},
         "proposed_entry_price": {"type": ["number", "null"]},
         "proposed_stop_loss_price": {"type": ["number", "null"]},
+        "tp_update_action": {
+            "type": "string",
+            "enum": ["none", "lower_tp1", "raise_tp2"],
+        },
+        "proposed_take_profit_price": {"type": ["number", "null"]},
+        "proposed_take_profit_price_2": {"type": ["number", "null"]},
+        "tp_update_reason": {"type": ["string", "null"]},
         "reasoning": {"type": "string", "minLength": 1, "maxLength": 280},
         "diagnosis_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
         "diagnosis_confidence_reasoning": {"type": "string"},
@@ -427,6 +434,32 @@ _DECISION_BASE: dict = {
                     "entry_rule": {"type": "string"},
                 },
                 "required": ["entry_basis_bar", "entry_basis_extreme", "entry_rule"],
+            },
+        },
+        {
+            "if": {
+                "properties": {"tp_update_action": {"const": "lower_tp1"}},
+                "required": ["tp_update_action"],
+            },
+            "then": {
+                "properties": {
+                    "proposed_take_profit_price": {"type": "number"},
+                    "proposed_take_profit_price_2": {"type": "null"},
+                },
+                "required": ["proposed_take_profit_price"],
+            },
+        },
+        {
+            "if": {
+                "properties": {"tp_update_action": {"const": "raise_tp2"}},
+                "required": ["tp_update_action"],
+            },
+            "then": {
+                "properties": {
+                    "proposed_take_profit_price": {"type": "null"},
+                    "proposed_take_profit_price_2": {"type": "number"},
+                },
+                "required": ["proposed_take_profit_price_2"],
             },
         },
     ],

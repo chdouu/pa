@@ -14,6 +14,8 @@ class FakeClient:
         self.algos = []
         self.canceled = []
         self.amended = []
+        self.algo_amended = []
+        self.algo_details = {}
         self.closed = False
 
     def close(self): self.closed = True
@@ -33,9 +35,21 @@ class FakeClient:
     def amend_order(self, *args): self.amended.append(args); return {}
     def cancel_order(self, _inst, order_id): self.canceled.append(order_id); self.order_state = "canceled"; return {}
     def place_algo_order(self, payload):
-        self.algos.append(payload); return {"algoId": f"a{len(self.algos)}", "sCode": "0"}
-    def cancel_algos(self, items): self.canceled.extend(x["algoId"] for x in items); return []
-    def get_algo_order(self, _id): return {"state": "live"}
+        self.algos.append(payload)
+        algo_id = f"a{len(self.algos)}"
+        self.algo_details[algo_id] = {**payload, "algoId": algo_id, "state": "live"}
+        return {"algoId": algo_id, "sCode": "0"}
+    def amend_algo_order(self, inst_id, algo_id, *, tp_trigger_px, req_id=""):
+        self.algo_amended.append((inst_id, algo_id, tp_trigger_px, req_id))
+        self.algo_details[algo_id]["tpTriggerPx"] = tp_trigger_px
+        return {"algoId": algo_id, "sCode": "0", "reqId": req_id}
+    def cancel_algos(self, items):
+        self.canceled.extend(x["algoId"] for x in items)
+        for item in items:
+            if item["algoId"] in self.algo_details:
+                self.algo_details[item["algoId"]]["state"] = "canceled"
+        return []
+    def get_algo_order(self, algo_id): return dict(self.algo_details.get(algo_id, {"state": "live"}))
     def find_pending_algo(self, _id): return {}
 
 
@@ -62,10 +76,10 @@ def decision(**updates):
     return value
 
 
-def submit(svc, bar, dec=None, high=105, low=95):
+def submit(svc, bar, dec=None, high=105, low=95, close=100):
     return svc.submit_analysis(
         exchange="OKX", symbol="BTCUSDT", timeframe="15m", bar_ts=bar,
-        decision=dec or decision(), bar_high=high, bar_low=low,
+        decision=dec or decision(), bar_high=high, bar_low=low, bar_close=close,
     )
 
 
@@ -159,3 +173,106 @@ def test_completed_thesis_requires_next_closed_bar_before_reentry(tmp_path):
     svc.store.update(thesis["id"], status="COMPLETED")
     assert submit(svc, 100)["action"] == "wait_next_bar"
     assert submit(svc, 200)["action"] == "created"
+
+
+def _open_fully_protected_position(svc, fake):
+    submit(svc, 100)
+    fake.fill = "10"; fake.position = "10"; fake.order_state = "filled"
+    svc._reconcile_one(fake, svc.store.active_all()[0])
+
+
+def test_active_long_can_lower_only_tp1(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_position(svc, fake)
+    dec = decision(
+        order_type="不下单", order_direction=None, entry_price=None,
+        stop_loss_price=None, take_profit_price=None, take_profit_price_2=None,
+        tp_update_action="lower_tp1", proposed_take_profit_price=105,
+        proposed_take_profit_price_2=None, tp_update_reason="阻力前动能不足",
+    )
+    submit(svc, 200, dec, close=102)
+    assert [(item[1], item[2]) for item in fake.algo_amended] == [("a1", "105")]
+    thesis = svc.store.active_all()[0]
+    assert thesis["current_tp1"] == "105"
+    assert thesis["current_tp2"] == "120"
+
+
+def test_active_long_can_raise_only_tp2(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_position(svc, fake)
+    dec = decision(
+        order_type="不下单", order_direction=None, entry_price=None,
+        stop_loss_price=None, take_profit_price=None, take_profit_price_2=None,
+        tp_update_action="raise_tp2", proposed_take_profit_price=None,
+        proposed_take_profit_price_2=130, tp_update_reason="强势突破",
+    )
+    submit(svc, 200, dec, close=112)
+    assert [(item[1], item[2]) for item in fake.algo_amended] == [("a2", "130")]
+    thesis = svc.store.active_all()[0]
+    assert thesis["current_tp1"] == "110"
+    assert thesis["current_tp2"] == "130"
+
+
+def test_tp1_cannot_be_lowered_below_latest_close(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_position(svc, fake)
+    dec = decision(tp_update_action="lower_tp1", proposed_take_profit_price=104)
+    submit(svc, 200, dec, close=105)
+    assert fake.algo_amended == []
+    assert svc.store.active_all()[0]["current_tp1"] == "110"
+
+
+def test_other_timeframe_records_but_does_not_amend_tp(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_position(svc, fake)
+    result = svc.submit_analysis(
+        exchange="OKX", symbol="BTCUSDT", timeframe="1h", bar_ts=200,
+        decision=decision(tp_update_action="raise_tp2", proposed_take_profit_price_2=130),
+        bar_high=115, bar_low=105, bar_close=112,
+    )
+    assert result["action"] == "recorded_other_timeframe"
+    assert fake.algo_amended == []
+
+
+def _open_fully_protected_short(svc, fake):
+    submit(
+        svc, 100,
+        decision(
+            order_direction="做空", stop_loss_price=110,
+            take_profit_price=90, take_profit_price_2=80,
+        ),
+    )
+    fake.fill = "10"; fake.position = "-10"; fake.order_state = "filled"
+    svc._reconcile_one(fake, svc.store.active_all()[0])
+
+
+def test_active_short_can_move_tp1_toward_entry(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_short(svc, fake)
+    dec = decision(
+        order_type="不下单", order_direction=None, entry_price=None,
+        stop_loss_price=None, take_profit_price=None, take_profit_price_2=None,
+        tp_update_action="lower_tp1", proposed_take_profit_price=93,
+        proposed_take_profit_price_2=None, tp_update_reason="支撑前动能不足",
+    )
+    submit(svc, 200, dec, close=94)
+    assert [(item[1], item[2]) for item in fake.algo_amended] == [("a1", "93")]
+    thesis = svc.store.active_all()[0]
+    assert thesis["current_tp1"] == "93"
+    assert thesis["current_tp2"] == "80"
+
+
+def test_active_short_can_extend_tp2_away_from_entry(tmp_path):
+    fake = FakeClient(); svc = service(tmp_path, fake)
+    _open_fully_protected_short(svc, fake)
+    dec = decision(
+        order_type="不下单", order_direction=None, entry_price=None,
+        stop_loss_price=None, take_profit_price=None, take_profit_price_2=None,
+        tp_update_action="raise_tp2", proposed_take_profit_price=None,
+        proposed_take_profit_price_2=70, tp_update_reason="强势向下突破",
+    )
+    submit(svc, 200, dec, close=88)
+    assert [(item[1], item[2]) for item in fake.algo_amended] == [("a2", "70")]
+    thesis = svc.store.active_all()[0]
+    assert thesis["current_tp1"] == "90"
+    assert thesis["current_tp2"] == "70"

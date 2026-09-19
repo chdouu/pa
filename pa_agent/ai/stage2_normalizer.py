@@ -158,6 +158,10 @@ _DECISION_SUBFIELD_KEYS: frozenset[str] = frozenset({
     "entry_zone_high",
     "proposed_entry_price",
     "proposed_stop_loss_price",
+    "tp_update_action",
+    "proposed_take_profit_price",
+    "proposed_take_profit_price_2",
+    "tp_update_reason",
 })
 
 # Decision fields models sometimes nest under diagnosis_summary by mistake.
@@ -604,6 +608,26 @@ def _ensure_decision_required_fields(
             changed = True
     elif decision.get("estimated_win_rate") is None:
         decision["estimated_win_rate"] = 50
+        changed = True
+    action = str(decision.get("tp_update_action") or "none").strip().lower()
+    if action not in {"none", "lower_tp1", "raise_tp2"}:
+        action = "none"
+    if decision.get("tp_update_action") != action:
+        decision["tp_update_action"] = action
+        changed = True
+    if action == "none":
+        for key in ("proposed_take_profit_price", "proposed_take_profit_price_2"):
+            if decision.get(key) is not None:
+                decision[key] = None
+                changed = True
+    elif action == "lower_tp1" and decision.get("proposed_take_profit_price_2") is not None:
+        decision["proposed_take_profit_price_2"] = None
+        changed = True
+    elif action == "raise_tp2" and decision.get("proposed_take_profit_price") is not None:
+        decision["proposed_take_profit_price"] = None
+        changed = True
+    if "tp_update_reason" not in decision:
+        decision["tp_update_reason"] = None
         changed = True
     if decision.get("estimated_win_rate_reasoning") is not None and not isinstance(
         decision.get("estimated_win_rate_reasoning"), str
