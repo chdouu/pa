@@ -9,6 +9,9 @@ PA Server was rebuilt from the adjacent `D:\stock\PA_Agent` working tree on
   untracked OKX execution modules and tests.
 - Desktop GUI files, DPAPI secrets, local settings, records, logs, virtual
   environments and trading databases were deliberately excluded.
+- The Python packages `pa_agent/data` and `pa_agent/records` are source code and
+  are included. Root-level `/data` and `/records` remain ignored as runtime
+  storage. The Qt-only `pa_agent/data/refresh_loop.py` is intentionally omitted.
 - Server adapters replace the Qt event loop, Windows credential storage and
   desktop dialogs while calling the copied analysis and OKX state machines.
 

@@ -4,8 +4,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 config/settings.json
-data/
-records/
-logs/
+/data/
+/records/
+/logs/
 build/
 *.egg-info/
